@@ -1,0 +1,9 @@
+# User Configuration Template
+# Copy this file to user_config.py and update the paths for your environment
+# user_config.py is gitignored and won't be committed
+
+# Path to the fMCG dataset directory
+FMCG_DATASET_PATH = "/fMCG_data/fMCG"
+
+# Path to the fMCG labels CSV file
+FMCG_LABELS_PATH = "/fMCG_data/fMCG_labels.csv"
