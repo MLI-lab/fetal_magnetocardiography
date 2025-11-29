@@ -1,0 +1,799 @@
+import logging
+import os
+from matplotlib import pyplot as plt
+from matplotlib.ticker import MaxNLocator
+import numpy as np
+import neurokit2 as nk
+import torch
+import matplotlib.gridspec as gridspec
+
+
+from . import plt_config
+
+logger = logging.getLogger(__name__)
+
+COORDINATE_IMAGE = os.path.join(os.path.dirname(__file__), "coordinates.png")
+
+
+def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]"):
+    if time is None:
+        if fs is None:
+            raise ValueError("Either time or fs must be provided.")
+        time = np.arange(m_hat.shape[0]) / fs
+
+    fig, ax = plt.subplots(2, 1, sharex=True, figsize=(7.11, 3))
+
+    # Plot the first component of m_hat
+    ax[0].plot(time, m_hat[:, 0])
+    ax[0].set_title("Fetal Magnetic Moment")
+    from matplotlib.ticker import MaxNLocator, AutoMinorLocator
+
+    ax[0].grid(True, which='minor', linestyle=':', linewidth=0.7)
+    ax[0].minorticks_on()
+    ax[0].grid(True)
+    ax[0].yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+    ax[0].yaxis.set_minor_locator(AutoMinorLocator(2))
+    ax[0].legend(["x", "y", "z"], loc="upper right")
+
+    # Plot the second component of m_hat
+    ax[1].plot(time, m_hat[:, 1])
+    ax[1].set_title("Maternal Magnetic Moment")
+    ax[1].grid(True)
+    ax[1].minorticks_on()
+    ax[1].grid(True, which='minor', linestyle=':', linewidth=0.7)
+    ax[1].yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+    ax[1].yaxis.set_minor_locator(AutoMinorLocator(2))
+    # ax[1].set_ylabel(r"Magnetic Moment [uAm$^2$]")
+    ax[1].legend(["x", "y", "z"], loc="upper right")
+
+    # Set x-axis minor ticks for both subplots
+    ax[1].xaxis.set_minor_locator(AutoMinorLocator(4))
+    ax[0].xaxis.set_minor_locator(AutoMinorLocator(4))
+
+    # Set the x-axis label for the shared axis
+    ax[1].set_xlabel("Time [s]")
+    ax[1].set_xlim(xlim)
+    fig.supylabel(ylabel)
+
+    if savename:
+        plt.savefig(
+            savename,
+            bbox_inches="tight",
+            pad_inches=0.01, dpi=fig.dpi,
+        )
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def set_axes_equal(ax):
+    """
+    Taken from https://stackoverflow.com/questions/13685386/how-to-set-the-equal-aspect-ratio-for-all-axes-x-y-z
+
+    Make axes of 3D plot have equal scale so that spheres appear as spheres,
+    cubes as cubes, etc.
+
+    Input
+      ax: a matplotlib axis, e.g., as output from plt.gca().
+    """
+
+    x_limits = ax.get_xlim3d()
+    y_limits = ax.get_ylim3d()
+    z_limits = ax.get_zlim3d()
+
+    x_range = abs(x_limits[1] - x_limits[0])
+    x_middle = np.mean(x_limits)
+    y_range = abs(y_limits[1] - y_limits[0])
+    y_middle = np.mean(y_limits)
+    z_range = abs(z_limits[1] - z_limits[0])
+    z_middle = np.mean(z_limits)
+
+    # The plot bounding box is a sphere in the sense of the infinity
+    # norm, hence I call half the max range the plot radius.
+    plot_radius = 0.55 * max([x_range, y_range, z_range])
+
+    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
+    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
+    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+
+
+def draw_system(
+    r_sensors,
+    r_dipole,
+    m,
+    N=1000,
+    aspect=[4, 4, 3],
+    sensor_array_size=(200, 12),
+    loop_scale=1,
+    lim=[None, None, None],
+    labels=None,
+    savename=None,
+    figsize=(7.11, 5),
+    img_pos=[0.00, -0.1, 0.2, 0.2],
+):
+    fig = plt.figure(figsize=figsize)
+
+    # # reference coordinates
+    image = plt.imread(COORDINATE_IMAGE)
+    # image = np.rot90(image, k=3)
+    ax = plt.axes(
+        img_pos, frameon=False, zorder=999
+    )  # Change the numbers in this array to position your image [left, bottom, width, height])
+    ax.imshow(image)
+    ax.axis("off")
+
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(
+        r_sensors[:, 0],
+        r_sensors[:, 2],
+        r_sensors[:, 1],
+        color="gray",
+        s=sensor_array_size[0],
+        marker="s",
+        label="Sensors",
+        edgecolor="black",
+        # depthshade=False,
+        zorder=1,
+        alpha=0.8,
+    )
+    # Label each sensor according to its index
+    for i, coord in enumerate(r_sensors):
+        ax.text(
+            coord[0],
+            coord[2],
+            coord[1],
+            f"{i+1}",
+            color="m",
+            fontsize=sensor_array_size[1],
+            weight="bold",
+            va="center",
+            ha="center",
+            zorder=10,
+        )
+
+    # Plot dipole
+    assert r_dipole.ndim == m.ndim
+    if r_dipole.shape[0] > m.shape[0]:
+        m = np.repeat(m, r_dipole.shape[0], axis=0)
+        print("Warning: m shape does not match r_dipole shape. Repeating m.")
+    if r_dipole.shape[0] < m.shape[0]:
+        r_dipole = np.repeat(r_dipole, m.shape[0], axis=0)
+        print("Warning: r_dipole shape does not match m shape. Repeating r_dipole.")
+
+    if r_dipole.ndim == 2:
+        r_dipole = r_dipole[np.newaxis, :, :]
+        m = m[np.newaxis, :, :]
+
+    r_dipole = np.transpose(r_dipole, (1, 0, 2))
+    m = np.transpose(m, (1, 0, 2))
+    colors = np.array(["tab:red", "tab:blue"])[: len(r_dipole)]
+
+    for i, (dipole, moment, color) in enumerate(zip(r_dipole.copy(), m.copy(), colors)):
+        if dipole.shape[0] == 1:
+            ax.quiver(
+                dipole[0, 0],
+                dipole[0, 2],
+                dipole[0, 1],
+                moment[0, 0],
+                moment[0, 2],
+                moment[0, 1],
+                color=color,
+                length=0.02,
+                normalize=True,
+                label=f"{labels[i]} Dipole" if labels else "Dipole",
+                linewidths=1.5,
+                arrow_length_ratio=0.4,
+            )
+        else:
+            moment *= loop_scale / np.linalg.norm(moment)
+            ax.plot(
+                dipole[:N, 0] + moment[:N, 0],
+                dipole[:N, 2] + moment[:N, 2],
+                dipole[:N, 1] + moment[:N, 1],
+                color=color,
+                linestyle="dotted",
+                label=f"{labels[i]} Dipole" if labels else "Dipole",
+                alpha=0.5,
+            )
+
+        # Origin marker
+        ax.scatter(
+            dipole[:N, 0],
+            dipole[:N, 2],
+            dipole[:N, 1],
+            c=color,
+            marker="x",
+            label=f"{labels[i]} Dipole Position" if labels else "Dipole Position",
+        )
+    ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=4))
+    ax.set_xlabel("X [m]")
+    ax.set_ylabel("Z [m]")
+    ax.set_zlabel("Y [m]")
+    ax.invert_zaxis()
+    ax.view_init(azim=-165, elev=20)
+    ax.legend(loc="upper center", ncol=3)
+    ax.zaxis.labelpad = 0
+    # set_axes_equal(ax)
+    ax.set_box_aspect(aspect)
+    ax.set_xlim(lim[0])
+    ax.set_ylim(lim[2])
+    ax.set_zlim(lim[1])
+    plt.tight_layout()
+    fig.subplots_adjust(0.00, 0.00, 0.99, 0.99, wspace=0.15, hspace=0.4)
+
+    if savename is not None:
+        plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_vcg(
+    filtered_signals,
+    ecg=None,
+    fs=1000,
+    fetal_downsample_factor=1,
+    savename=None,
+    sig_name="VCG",
+    plt_HS_coor=True,
+    labels=["X [m]", "Y [m]", "Z [m]"],
+):
+    N = min(int(3 * fs), len(filtered_signals))
+    time = np.arange(N) / fs
+
+    if ecg is None:
+        segments = {
+            "P-wave": ([0], [N]),
+        }
+        rpeaks = None
+    else:
+        # Segment the signal according to the waves
+        cleaned = nk.ecg_clean(
+            ecg, sampling_rate=int(fs / fetal_downsample_factor), method="vg"
+        )
+        _, rpeaks = nk.ecg_peaks(
+            cleaned, sampling_rate=int(fs / fetal_downsample_factor), method="vg"
+        )
+        s, waves = nk.ecg_delineate(
+            cleaned,
+            rpeaks,
+            sampling_rate=int(fs / fetal_downsample_factor),
+            method="dwt",
+        )
+        segments = {
+            "P-wave": (waves["ECG_P_Onsets"], waves["ECG_P_Offsets"]),
+            "Q-wave": (waves["ECG_P_Offsets"], waves["ECG_Q_Peaks"]),
+            "R-wave": (waves["ECG_Q_Peaks"], waves["ECG_S_Peaks"]),
+            "S-wave": (waves["ECG_S_Peaks"], waves["ECG_T_Onsets"]),
+            "T-wave": (waves["ECG_T_Onsets"], waves["ECG_T_Offsets"]),
+            "Baseline": (waves["ECG_T_Offsets"][:-1], waves["ECG_P_Onsets"][1:]),
+        }
+    colors = {
+        "P-wave": "tab:blue",
+        "Q-wave": "tab:orange",
+        "R-wave": "tab:red",
+        "S-wave": "tab:green",
+        "T-wave": "tab:purple",
+        "Baseline": "tab:grey",
+    }
+
+    fig = plt.figure(figsize=(7.11, 3.5), dpi=500)
+    gs = gridspec.GridSpec(4, 2, width_ratios=[2, 3], height_ratios=[1, 1, 1, 1])
+
+    # reference coordinates
+    if plt_HS_coor:
+        image = plt.imread(COORDINATE_IMAGE)
+        image = np.rot90(image, k=3)
+        ax = plt.axes(
+            [0.00, 0.15, 0.2, 0.2], frameon=True, zorder=999
+        )  # Change the numbers in this array to position your image [left, bottom, width, height])
+        ax.imshow(image)
+        ax.axis("off")
+
+    # 3D plot on the left, spanning the top three rows
+    ax = fig.add_subplot(gs[:3, 0], projection="3d")
+    ax.plot(
+        filtered_signals[:N, 0],
+        filtered_signals[:N, 1],
+        filtered_signals[:N, 2],
+        color=colors["Baseline"],
+    )
+    # Plot projections on the side planes
+    ax.plot(
+        filtered_signals[:N, 0],
+        filtered_signals[:N, 1],
+        zs=ax.get_zlim()[0] * 0.95,
+        zdir="z",
+        color="gray",
+        linestyle="-",
+        alpha=0.3,
+        axlim_clip=True,
+    )
+    ax.plot(
+        filtered_signals[:N, 0],
+        filtered_signals[:N, 2],
+        zs=ax.get_ylim()[1] * 1.05,
+        zdir="y",
+        color="gray",
+        linestyle="-",
+        alpha=0.3,
+        axlim_clip=True,
+    )
+    ax.plot(
+        filtered_signals[:N, 1],
+        filtered_signals[:N, 2],
+        zs=ax.get_xlim()[1] * 1.05,
+        zdir="x",
+        color="gray",
+        linestyle="-",
+        alpha=0.3,
+        axlim_clip=True,
+    )
+
+    for wave, (start_vals, end_vals) in segments.items():
+        for s_idx, e_idx in zip(start_vals, end_vals):
+            if (
+                not np.isnan(s_idx)
+                and not np.isnan(e_idx)
+                and int(s_idx) < N
+                and int(e_idx) < N
+            ):
+                ax.plot(
+                    filtered_signals[int(s_idx) : int(e_idx), 0],
+                    filtered_signals[int(s_idx) : int(e_idx), 1],
+                    filtered_signals[int(s_idx) : int(e_idx), 2],
+                    color=colors[wave],
+                )
+
+    # Origin marker
+    if rpeaks is not None:
+        ax.scatter(0, 0, 0, c="k", marker="x", label="Origin")
+        r_peak_idx = rpeaks["ECG_R_Peaks"][1]
+        r_peak_vals = filtered_signals[r_peak_idx, :]
+        ax.quiver(
+            0,
+            0,
+            0,
+            r_peak_vals[0],
+            r_peak_vals[1],
+            r_peak_vals[2],
+            color="k",
+            arrow_length_ratio=0.1,
+            label="R Peak Arrow",
+            linewidths=1.5,
+        )
+        ax.text(
+            r_peak_vals[0],
+            r_peak_vals[1],
+            r_peak_vals[2] + 0.1,
+            "Cardiac Vector",
+            color="k",
+            fontsize=10,
+            weight="bold",
+        )
+
+    ax.set_xlabel(labels[0], labelpad=-2)
+    ax.set_ylabel(labels[1], labelpad=-2)
+    ax.set_zlabel(labels[2], labelpad=-2)
+    # ax.set_title("{sig_name} Loop", pad=0)
+    ax.tick_params(pad=0)
+    # plt_config.set_axes_equal(ax)
+    ax.view_init(azim=210, elev=30)
+    ax.zaxis.labelpad = -2
+
+    # Create subplots on the right
+    axs = [fig.add_subplot(gs[i, 1]) for i in range(3)]
+    for i, label in enumerate(
+        [rf"{sig_name}$_x$", rf"{sig_name}$_y$", rf"{sig_name}$_z$"]
+    ):
+        axs[i].plot(
+            time[: int(N)], filtered_signals[: int(N), i], color=colors["Baseline"]
+        )
+        for wave, (start_vals, end_vals) in segments.items():
+            for s_idx, e_idx in zip(start_vals, end_vals):
+                if (
+                    not np.isnan(s_idx)
+                    and not np.isnan(e_idx)
+                    and int(s_idx) < N
+                    and int(e_idx) < N
+                ):
+                    axs[i].plot(
+                        time[int(s_idx) : int(e_idx)],
+                        filtered_signals[int(s_idx) : int(e_idx), i],
+                        color=colors[wave],
+                        label=wave if s_idx == start_vals[0] else "",
+                    )
+
+        axs[i].set_title(label)
+        axs[i].set_ylabel("Amplitude")
+        axs[i].grid()
+    axs[0].legend(
+        ncol=6, loc="upper center", bbox_to_anchor=(0.05, 2.2), fancybox=False
+    )
+    axs[-1].set_xlabel("Time [s]")
+
+    gs.update(left=0.16, bottom=0.01, top=0.8, right=0.99, wspace=0.2, hspace=0.8)
+    if savename is not None:
+        plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_vector_loop(
+    m_true,
+    r_true,
+    m_pred,
+    r_pred,
+    time,
+    i_dipole=0,
+    savename=None,
+    title=r"Magnetic Moment ($\mathrm{\mu}$Am$^2$)",
+):
+    if isinstance(m_true, torch.Tensor):
+        m_true = m_true.detach().cpu().numpy()
+    if isinstance(r_true, torch.Tensor):
+        r_true = r_true.detach().cpu().numpy()
+    if isinstance(m_pred, torch.Tensor):
+        m_pred = m_pred.detach().cpu().numpy()
+    if isinstance(r_pred, torch.Tensor):
+        r_pred = r_pred.detach().cpu().numpy()
+
+    N = len(time)
+    if r_pred.ndim == 2:
+        r_pred = r_pred[np.newaxis, :, :]
+    if r_pred.shape[0] == 1:
+        r_pred = np.repeat(r_pred, N, axis=0)
+    if r_true.ndim == 2:
+        r_true = r_true[np.newaxis, :, :]
+    if r_true.shape[0] == 1:
+        r_true = np.repeat(r_true, N, axis=0)
+
+    if i_dipole == "all":
+        range_dipoles = range(r_pred.shape[1])
+    else:
+        range_dipoles = [i_dipole]
+
+    for i_dipole in range_dipoles:
+        fig = plt.figure(figsize=(7.11, 3), dpi=500)
+        gs = gridspec.GridSpec(2, 2, width_ratios=[2, 3], height_ratios=[1, 1])
+
+        # 3D plot on the left, spanning the top three rows
+        ax = fig.add_subplot(gs[:3, 0], projection="3d")
+
+        ax.plot(
+            r_pred[:N, i_dipole, 0] + m_pred[:N, i_dipole, 0],
+            r_pred[:N, i_dipole, 1] + m_pred[:N, i_dipole, 1],
+            r_pred[:N, i_dipole, 2] + m_pred[:N, i_dipole, 2],
+            color="k",
+            linestyle="dotted",
+            label="Estimated Loop",
+        )
+        # Origin marker
+        ax.scatter(
+            r_pred[:, i_dipole, 0],
+            r_pred[:, i_dipole, 1],
+            r_pred[:, i_dipole, 2],
+            c="tab:grey",
+            marker="x",
+            label="Origin",
+            alpha=0.5,
+        )
+        ax.set_xlabel("X", labelpad=-5)
+        ax.set_ylabel("Y", labelpad=-5)
+        ax.set_zlabel("Z", labelpad=5)
+        ax.set_title("Vector Loop", pad=0)
+        ax.tick_params(pad=0)
+        ax.view_init(azim=210, elev=30)
+        ax.zaxis.labelpad = -2
+
+        # Create subplots on the right
+        axs = [fig.add_subplot(gs[i, 1]) for i in range(2)]
+
+        # Plot the estimated and true magnitude values
+        for i, label in enumerate([r"$x$", r"$y$", r"$z$"]):
+            axs[0].plot(
+                time,
+                m_pred[: int(N), i_dipole, i],
+                label=f"Estimated {label}",
+            )
+            axs[0].plot(
+                time,
+                m_true[: int(N), i_dipole, i],
+                linestyle="dotted",
+                color=axs[0].lines[-1].get_color(),
+                label=f"True {label}",
+            )
+        axs[0].set_title(title)
+        axs[0].grid()
+        axs[0].legend(
+            ncol=6, loc="upper center", bbox_to_anchor=(0.05, 1.6), fancybox=False
+        )
+
+        # Plot the estimated and true position values
+        for i, label in enumerate([r"$x$", r"$y$", r"$z$"]):
+            axs[1].plot(
+                time,
+                r_pred[: int(N), i_dipole, i],
+                label=label,
+            )
+            axs[1].plot(
+                time,
+                r_true[: int(N), i_dipole, i],
+                linestyle="dotted",
+                color=axs[1].lines[-1].get_color(),
+            )
+        axs[1].set_title("Position [m]")
+        axs[1].grid()
+        axs[-1].set_xlabel("Time [s]")
+
+        gs.update(left=0.15, bottom=0.01, top=0.80, right=0.99, wspace=0.25, hspace=0.4)
+        if savename is not None:
+            savename_ = savename.replace(".pdf", f"_dipole_{i_dipole}.pdf")
+            plt.savefig(savename_, dpi=fig.dpi, bbox_inches="tight", pad_inches=0)
+            plt.close(fig)
+        else:
+            plt.show()
+
+
+def plot_sensor_signals(
+    field,
+    time=None,
+    xlim=[0, 2],
+    ylim=None,
+    labels=[r"$x$", r"$y$", r"$z$"],
+    xlabel="Time [s]",
+    ylabel="Field [pT]",
+    title="Field per Sensor and Location",
+    sensor_names=None,
+    savename=None,
+    sharex=True,
+    sharey=True,
+    artifacts_mask=None,
+):
+
+    fig, axs = plt.subplots(
+        4, 4, figsize=(7.11, 5), sharex=sharex, sharey=sharey, dpi=500
+    )
+    for i in range(field.shape[-2]):
+        ax = axs[i // 4, i % 4]
+        values = field[:, i, :]
+
+        if time is None:
+            time = np.arange(values.shape[0])
+
+        mask = (time >= xlim[0]) & (time <= min(xlim[1], time[-1]))
+        times = np.repeat(time[mask][:, None], values.shape[-1], axis=1)
+        lines = ax.plot(times, values[mask], label=labels)
+
+        if sensor_names is not None:
+            ax.set_title(f"Sensor {sensor_names[i]}")
+        else:
+            ax.set_title(f"Sensor {i+1}")
+        ax.grid()
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=4))
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=4))
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
+        if artifacts_mask is not None:
+            ax.fill_between(
+                time,
+                np.nanmin(values[mask]) if not np.isnan(values[mask]).all() else 0,
+                np.nanmax(values[mask]) if not np.isnan(values[mask]).all() else 0,
+                where=artifacts_mask,
+                color="red",
+                alpha=0.3,
+                label="Artifacts",
+                linewidth=0,
+            )
+            for line in lines:
+                line.set_linewidth(0.5)
+
+    if ylim is None and not np.isnan(values[mask]).all():
+        min_val = np.nanmin(field[mask, :, :])
+        max_val = np.nanmax(field[mask, :, :])
+        ylim_ = [int(np.floor(min_val)), int(np.ceil(max_val))]
+        ax.set_ylim(ylim_)
+
+    fig.legend(
+        lines,
+        labels=labels,
+        loc="upper center",
+        ncol=len(labels),
+        bbox_to_anchor=(0.5, 0.98),
+        fancybox=False,
+    )
+    fig.supxlabel(xlabel)
+    fig.supylabel(ylabel, x=0)
+    fig.subplots_adjust(0.06, 0.08, 0.99, 0.87, wspace=0.15, hspace=0.4)
+
+    if savename:
+        plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_dict(
+    sensor_dict,
+    time=None,
+    xlim=[50, 52],
+    ylim=[-10, 10],
+    fetal_peaks=None,
+    maternal_peaks=None,
+    labels=[r"$x$", r"$y$", r"$z$"],
+    xlabel="Time [s]",
+    ylabel="Field [pT]",
+    title="Field Measurements per Sensor and Location",
+    savename=None,
+    sharex=True,
+    sharey=True,
+):
+    # # plot
+    # fig, axs = plt.subplots(4, 4, figsize=(15, 10), sharex=True, sharey=True)
+    # for i, (name, values) in enumerate(sensor_dict.items()):
+    #     ax = axs[i // 4, i % 4]
+    #     if time is None:
+    #         time = np.arange(values.shape[0])
+    #     mask = (time >= xlim[0]) & (time <= xlim[1])
+    #     times = np.repeat(time[mask][:, None], values.shape[1], axis=1)
+    #     ax.plot(times, values[mask], label=labels)
+    #     ax.set_title(name)
+    #     ax.grid()
+    #     ax.set_xlim(xlim)
+    #     ax.set_ylim(ylim)
+    #     if fetal_peaks is not None:
+    #         ax.vlines(fetal_peaks, ymin=-25, ymax=25, color="r", linestyle="--", alpha=0.3)
+    #     if maternal_peaks is not None:
+    #         ax.vlines(maternal_peaks, ymin=-25, ymax=25, color="b", linestyle="--", alpha=0.3)
+    #     ax.legend(loc="upper right")
+    # fig.supxlabel(xlabel)
+    # fig.supylabel(ylabel)
+    # fig.suptitle(title)
+    # plt.tight_layout()
+    # plt.savefig("grid.png", dpi=100)
+    # #plt.show()
+    from matplotlib.ticker import MaxNLocator
+
+    fig, axs = plt.subplots(
+        4, 4, figsize=(7.11, 5), sharex=sharex, sharey=sharey, dpi=500
+    )
+    for i, (name, values) in enumerate(sensor_dict.items()):
+        ax = axs[i // 4, i % 4]
+
+        if time is None:
+            time = np.arange(values.shape[0])
+        mask = (time >= xlim[0]) & (time <= xlim[1])
+        times = np.repeat(time[mask][:, None], values.shape[1], axis=1)
+        lines = ax.plot(times, values[mask], label=labels)
+
+        ax.set_title(f"Sensor {name}")
+        ax.grid()
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=4))
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=4))
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
+        if ylim is None and not np.isnan(values[mask]).all():
+            min_val = np.nanmin(values[mask])
+            max_val = np.nanmax(values[mask])
+            ylim_ = [int(np.floor(min_val)), int(np.ceil(max_val))]
+            ax.set_ylim(ylim_)
+
+        if fetal_peaks is not None:
+            ax.vlines(
+                fetal_peaks, ymin=-25, ymax=25, color="r", linestyle="--", alpha=0.3
+            )
+        if maternal_peaks is not None:
+            ax.vlines(
+                maternal_peaks, ymin=-25, ymax=25, color="b", linestyle="--", alpha=0.3
+            )
+
+    fig.legend(
+        lines,
+        labels=labels,
+        loc="upper center",
+        ncol=len(labels),
+        bbox_to_anchor=(0.5, 0.98),
+        fancybox=False,
+    )
+    fig.supxlabel(xlabel)
+    fig.supylabel(ylabel, x=0)
+    fig.subplots_adjust(0.06, 0.08, 0.99, 0.87, wspace=0.15, hspace=0.4)
+
+    if savename:
+        plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_channels(
+    signals,
+    time=None,
+    xlim=[50, 52],
+    ylim=None,
+    fetal_peaks=None,
+    maternal_peaks=None,
+    ncols=2,
+    label="Channel",
+):
+    if time is None:
+        time = np.arange(signals.shape[0])
+    nrows = (signals.shape[1] + ncols - 1) // ncols
+    fig, axs = plt.subplots(nrows, ncols, figsize=(5 * ncols, nrows * 2), sharex=True)
+    axs = axs.flatten()
+    for i in range(signals.shape[1]):
+        axs[i].plot(time, signals[:, i])
+        axs[i].set_title(f"{label} {i}")
+        axs[i].set_xlim(xlim)
+        axs[i].set_ylim(ylim)
+        axs[i].grid()
+        axs[i].set_xlabel("Time [s]")
+        axs[i].set_ylabel("Amplitude")
+
+        if fetal_peaks is not None:
+            axs[i].vlines(
+                fetal_peaks, ymin=-25, ymax=25, color="r", linestyle="--", alpha=0.3
+            )
+        if maternal_peaks is not None:
+            axs[i].vlines(
+                maternal_peaks, ymin=-25, ymax=25, color="b", linestyle="--", alpha=0.3
+            )
+    for j in range(i + 1, len(axs)):
+        fig.delaxes(axs[j])
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_ica_method(
+    avg_waveform, std_waveform, fs, heartbeats_dict, savename=None, key="fetal"
+):
+    # for i in range(len(avg_waveform)):
+    #     if avg_waveform[i][int(len(avg_waveform)/2)] < 0:
+    #         avg_waveform[i] = -avg_waveform[i]
+    #         std_waveform[i] = -std_waveform[i]
+
+    mean_beat = np.mean(np.abs(avg_waveform), axis=0)
+
+    middle = int(len(mean_beat) / 2)
+    time = (np.arange(len(mean_beat)) - middle) / fs * 1000
+
+    fig, ax = plt.subplots(figsize=(7.11, 2.5), dpi=500)
+    ax.axvline(x=0, color="grey", linestyle="--")
+    for i in range(len(avg_waveform)):
+        ax.plot(
+            time,
+            avg_waveform[i],
+            # alpha=0.75,
+            linewidth=1 / np.log2(np.log2(1 + len(mean_beat))),  # .75,
+            color="k",
+            # linestyle="--",
+        )
+        # ax.fill_between(
+        #     time,
+        #     avg_waveform[i] - std_waveform[i],
+        #     avg_waveform[i] + std_waveform[i],
+        #     alpha=0.2,
+        # )
+    ax.hlines(0, time[0], time[-1], color="k", linestyle="--", linewidth=0.75)
+    # ax.set_xlim(time[0], time[-1])
+    df = heartbeats_dict[key]["M_x"]["mean_beat"].copy()
+    df.index = df.index * 1e3
+    xmin, xmax = df.index.min(), df.index.max()
+    ax.set_xlim(xmin, xmax)
+    # ax.set_title(component)
+    ax.set_xlabel("Time [ms]")
+    ax.set_ylabel(r"Reconstructed Field [pT]")
+    # ax.legend(ncol=4, loc="lower left")
+    ax.grid()
+    ax.grid(
+        which="minor", linestyle=":", linewidth=0.5
+    )  # Add gridlines between major ticks
+    ax.minorticks_on()  # Enable minor ticks without adding labels
+    if savename is not None:
+        plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0.01)
+        plt.close(fig)
+    else:
+        plt.show()

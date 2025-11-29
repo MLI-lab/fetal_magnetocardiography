@@ -1,0 +1,16 @@
+ipython==8.12.3
+ipython==8.15.0
+ipywidgets==8.1.7
+matplotlib==3.10.5
+neurokit2==0.2.12
+nptdms==1.10.0
+numpy==2.3.2
+padasip==1.2.2
+pandas==2.3.2
+pytorch_optimizer==3.8.0
+scikit_learn==1.7.1
+scipy==1.16.1
+torch==2.6.0+cu126
+torch_optimizer==0.3.0
+tqdm==4.65.0
+wfdb==4.3.0
