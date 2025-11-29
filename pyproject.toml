@@ -28,6 +28,5 @@ dev = [
     "ipywidgets",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["fmcg*"]
+[tool.setuptools]
+packages = ["fmcg"]
