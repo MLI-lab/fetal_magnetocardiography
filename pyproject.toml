@@ -23,9 +23,22 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
     "jupyter",
     "ipywidgets",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--cov=fmcg",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "-v",
 ]
 
 [tool.setuptools]
