@@ -228,6 +228,7 @@ def generate_synthetic_dipole_signals(
     fetal_rot=[180, 0, 0],
     fetal_pos=[[-0.02, -0.05, -0.02]],
     maternal_pos=[[-0.05, -0.05, 0.44]],
+    vcg_dataset_path=None,
 ):
     """
     Generate synthetic dipole signals for fetal and maternal dipole sources.
@@ -245,6 +246,7 @@ def generate_synthetic_dipole_signals(
         fetal_rot (list): Rotation angles for the fetal signal in degrees.
         fetal_pos (list): Position of the fetal dipole.
         maternal_pos (list): Position of the maternal dipole.
+        vcg_dataset_path (str): Path to the VCG dataset directory. Required parameter.
     Returns:
         dict: A dictionary containing the following keys:
         - m_true (ndarray): The true dipole moments.
@@ -260,7 +262,7 @@ def generate_synthetic_dipole_signals(
     num_dipoles = 2
 
     ## Load VCG data
-    filtered_signals, ecg_II, fs = load_vcg_data()
+    filtered_signals, ecg_II, fs = load_vcg_data(base_path=vcg_dataset_path)
 
     # downsample VCG signal
     filtered_signals = decimate(filtered_signals, decimation_factor, axis=0)

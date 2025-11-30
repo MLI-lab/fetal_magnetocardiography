@@ -37,6 +37,7 @@ def detect_heartbeats(
     segment_length=None,
     mu=0.001,
     nlms=False,
+    consider_mean=False,
     **kwargs,
 ):
     """
@@ -78,6 +79,12 @@ def detect_heartbeats(
         Length of each segment in seconds for processing. If None, processes the entire signal. Default is None.
     ica_components : int, optional
         The number of components to extract using ICA. Default is 3.
+    mu : float, optional
+        Learning rate for LMS adaptive filter. Default is 0.001.
+    nlms : bool, optional
+        If True, use normalized LMS. Default is False.
+    consider_mean : bool, optional
+        If True, consider mean for IBI calculation in subsequent_LMS method. Default is False.
 
     Returns:
     --------
@@ -133,6 +140,9 @@ def detect_heartbeats(
                 n_trials=n_trials,
                 ica_components=ica_components,
                 segment_length=None,  # Avoid next level of recursion!
+                mu=mu,
+                nlms=nlms,
+                consider_mean=consider_mean,
                 **kwargs,
             )
 
@@ -209,20 +219,7 @@ def detect_heartbeats(
             log_dict=log_dict,
             verbose=verbose,
             nlms=nlms,
-            consider_mean=False,  # Do not consider mean for IBI calculation
-        )
-    elif method == "subsequent_LMS_v2":
-        result = decompose_and_LMS(
-            result,
-            fs=fs,
-            n_components=ica_components,
-            n_trials=n_trials,
-            mu=mu,
-            plot=show_plots,
-            log_dict=log_dict,
-            verbose=verbose,
-            nlms=nlms,
-            consider_mean=True,  # Consider mean for IBI calculation
+            consider_mean=consider_mean,
         )
     elif method == "lsap":
         comp = decompose_and_match_components(

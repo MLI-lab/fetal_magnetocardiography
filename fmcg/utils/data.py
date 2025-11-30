@@ -12,14 +12,14 @@ from .plotting import plot_utils
 logger = logging.getLogger(__name__)
 
 def load_vcg_data(
-    record="patient104/s0306lre", base_path="/jonas/fMCG/datasets/ptbdb", plot=False
+    record="patient104/s0306lre", base_path=None, plot=False
 ):
     """
     Load and preprocess VCG (Vectorcardiogram) data from a specified record.
 
     Parameters:
         record (str): The path to the record file within the dataset. Default is "patient104/s0306lre".
-        base_path (str): The base path to the dataset directory. Default is "/jonas/fMCG/datasets/ptbdb".
+        base_path (str): The base path to the dataset directory. Required parameter - must point to your local ptbdb dataset directory.
         plot (bool): If True, plots the VCG signals using plot_utils. Default is False.
 
     Returns:
@@ -28,6 +28,9 @@ def load_vcg_data(
             - ecg_II (ndarray): The ECG lead II signal.
             - fs (int): The sampling frequency of the record.
     """
+    if base_path is None:
+        raise ValueError("base_path must be provided. Please specify the path to your local ptbdb dataset directory.")
+
     record = wfdb.rdrecord(f"{base_path}/{record}", physical=True)
     fs = record.fs
 
