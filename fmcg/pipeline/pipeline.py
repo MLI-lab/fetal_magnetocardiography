@@ -121,6 +121,25 @@ class Pipeline:
 
     def __init__(self):
         self._step_num = 1
+        self._device_context = None
+
+    def __enter__(self):
+        """Enter context manager - setup resources."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit context manager - cleanup resources."""
+        # Clean up GPU memory if using CUDA
+        if hasattr(self, 'device') and 'cuda' in self.device:
+            try:
+                import torch
+                torch.cuda.empty_cache()
+                logger.debug(f"Cleared CUDA cache for device {self.device}")
+            except Exception as e:
+                logger.warning(f"Failed to clear CUDA cache: {e}")
+
+        # Return False to propagate exceptions
+        return False
 
     def _log_step_header(self, description):
         """Helper method to log consistent step headers."""
@@ -1155,11 +1174,18 @@ class Pipeline:
         """
         Run the complete pipeline from data loading to post-processing.
 
+        Args:
+            config: Pipeline configuration (dict or PipelineConfig dataclass)
+            system_config: System configuration for measurement device
+            measurement_config: Measurement configuration
+            mask: Optional mask to exclude specific sensor axes
+            log_note: Optional note to include in the log record
+            log_dict: Optional dictionary for logging additional information
+            verbose: If True, enables verbose logging
+
         Note:
             If no noise data is provided in the configuration, the pipeline will not execute and will return early.
-
-        Args:
-            log_note (str): Optional note to include in the log record.
+            The config parameter accepts both legacy dict format and new PipelineConfig dataclass.
         """
 
         if verbose:
@@ -1167,8 +1193,14 @@ class Pipeline:
 
         self.systemconfig = system_config
         self.measurementconfig = measurement_config
-        self.config = config
-        self.device = config.get("device", "cpu")
+
+        # Convert PipelineConfig to dict if needed (for backward compatibility with internal code)
+        if hasattr(config, 'to_dict'):
+            self.config = config.to_dict()
+            logger.debug("Converted PipelineConfig dataclass to dict format")
+        else:
+            self.config = config
+        self.device = self.config.get("device", "cpu")
         self._step_num = 1
 
         self.save_reports = config.get("save_reports", False)
