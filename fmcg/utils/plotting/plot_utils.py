@@ -747,6 +747,179 @@ def plot_channels(
     plt.show()
 
 
+def plot_dipole_positions_3d(
+    r_fitted,
+    r_sensors,
+    r_init=None,
+    bounds=None,
+    time_idx=0,
+    figsize=(3.5, 2.5),
+    dpi=300,
+    colors=None,
+    labels=None,
+    show_coord_img=True,
+    coord_img_bbox=None,
+    savename=None,
+):
+    """
+    Plot 3D visualization of fitted dipole positions, sensors, and bounds box.
+    
+    Parameters
+    ----------
+    r_fitted : numpy.ndarray or torch.Tensor
+        Fitted dipole positions with shape (T, n_dipoles, 3) or (n_dipoles, 3)
+    r_sensors : numpy.ndarray or torch.Tensor
+        Sensor positions with shape (n_sensors, 3)
+    r_init : numpy.ndarray or torch.Tensor, optional
+        Initial dipole positions with shape (T, n_dipoles, 3) or (n_dipoles, 3)
+    bounds : numpy.ndarray, optional
+        Bounds for each dipole with shape (n_dipoles, 3, 2) where bounds[i, j] = (min, max)
+        If None, uses default fetal/maternal bounds
+    time_idx : int, default=0
+        Time index to plot (if positions vary over time)
+    figsize : tuple, default=(3.5, 2.5)
+        Figure size in inches
+    dpi : int, default=300
+        Figure DPI
+    colors : list, optional
+        Colors for each dipole. If None, uses ['red', 'blue']
+    labels : list, optional
+        Labels for each dipole. If None, uses ['Fetal', 'Maternal']
+    show_coord_img : bool, default=True
+        Whether to show coordinate system image inset
+    coord_img_bbox : list, optional
+        Bounding box for coordinate image [left, bottom, width, height]
+        If None, uses [0.7, .05, 0.28, 0.28]
+    savename : str, optional
+        Path to save figure. If None, displays figure
+    
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The created figure
+    ax : matplotlib.axes.Axes3D
+        The 3D axes
+    """
+    # Convert tensors to numpy
+    if isinstance(r_fitted, torch.Tensor):
+        r_fitted = r_fitted.detach().cpu().numpy()
+    if isinstance(r_sensors, torch.Tensor):
+        r_sensors = r_sensors.detach().cpu().numpy()
+    if r_init is not None and isinstance(r_init, torch.Tensor):
+        r_init = r_init.detach().cpu().numpy()
+    
+    # Handle dimensions
+    if r_fitted.ndim == 3:
+        r_fitted = r_fitted[time_idx]
+    if r_init is not None and r_init.ndim == 3:
+        r_init = r_init[time_idx]
+    
+    # Default colors and labels
+    if colors is None:
+        colors = ['red', 'blue']
+    if labels is None:
+        labels = ['Fetal', 'Maternal']
+    
+    # Default bounds (fetal and maternal)
+    if bounds is None:
+        bounds = np.array([
+            [(-0.2, 0.2), (-0.2, -0.01), (-0.2, 0.2)],   # Fetal bounds
+            [(-0.4, 0.4), (-0.4, -0.01), (0.2, 0.7)]      # Maternal bounds
+        ]) * 100  # Convert to cm
+    
+    # Coordinate image bbox
+    if coord_img_bbox is None:
+        coord_img_bbox = [0.7, .05, 0.28, 0.28]
+    
+    # Create figure
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+    
+    # Add coordinate system image inset
+    if show_coord_img:
+        try:
+            image = plt.imread(COORDINATE_IMAGE)
+            ax_img = plt.axes(coord_img_bbox, frameon=True, zorder=999)
+            ax_img.imshow(image)
+            ax_img.axis("off")
+        except:
+            logger.warning("Could not load coordinate system image")
+    
+    # Create 3D axis
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Extract box bounds (using first dipole bounds for min, second for z-max)
+    bx_min, bx_max = bounds[0, 0, 0], bounds[0, 0, 1]
+    by_min, by_max = bounds[0, 1, 0], bounds[0, 1, 1]
+    bz_min, bz_max = bounds[0, 2, 0], bounds[1, 2, 1]
+    
+    # Draw bounds box
+    box_vertices = np.array([
+        [bx_min, by_min, bz_min], [bx_max, by_min, bz_min],
+        [bx_max, by_max, bz_min], [bx_min, by_max, bz_min],
+        [bx_min, by_min, bz_max], [bx_max, by_min, bz_max],
+        [bx_max, by_max, bz_max], [bx_min, by_max, bz_max]
+    ])
+    box_edges = [(0, 1), (1, 2), (2, 3), (3, 0),
+                 (4, 5), (5, 6), (6, 7), (7, 4),
+                 (0, 4), (1, 5), (2, 6), (3, 7)]
+    for start, end in box_edges:
+        ax.plot([box_vertices[start, 0], box_vertices[end, 0]],
+                [box_vertices[start, 2], box_vertices[end, 2]],
+                [box_vertices[start, 1], box_vertices[end, 1]],
+                color='black', linewidth=1, alpha=0.6)
+    
+    # Plot initial positions if provided
+    if r_init is not None:
+        r_init_cm = r_init * 100  # Convert to cm
+        for i in range(min(r_init.shape[0], len(colors))):
+            ax.scatter(r_init_cm[i, 0], r_init_cm[i, 2], r_init_cm[i, 1],
+                       c='green' if i == 0 else 'blue', marker='D', s=20, 
+                       edgecolors='red', linewidths=0.5, 
+                       label=f'{labels[i]} Init')
+    
+    # Plot sensors
+    r_sens_cm = r_sensors * 100  # Convert to cm
+    ax.scatter(r_sens_cm[:, 0], r_sens_cm[:, 2], r_sens_cm[:, 1],
+               c='grey', marker='s', s=10, edgecolors='black', 
+               linewidths=0.5, label='Sensors')
+    
+    # Plot fitted dipoles
+    r_fitted_cm = r_fitted * 100  # Convert to cm
+    for i in range(min(r_fitted.shape[0], len(colors))):
+        ax.scatter(r_fitted_cm[i, 0], r_fitted_cm[i, 2], r_fitted_cm[i, 1],
+                   c=colors[i], s=20, marker='x', label=labels[i], 
+                   edgecolors='black', linewidths=1, zorder=10)
+    
+    # Set labels and limits
+    ax.set_xlabel('x [cm]', labelpad=-2)
+    ax.set_ylabel('z [cm]', labelpad=-3)
+    ax.set_zlabel('y [cm]', labelpad=-5)
+    
+    # Set view angles and invert axes to match coordinate system
+    ax.invert_xaxis()
+    ax.invert_yaxis()
+    ax.invert_zaxis()
+    ax.view_init(elev=20, azim=20)
+    
+    # Adjust tick parameters
+    ax.tick_params(axis='y', pad=1)
+    ax.tick_params(axis='z', pad=-1)
+    
+    # Add legend
+    ax.legend(loc='upper left', fontsize=8, frameon=False)
+    
+    plt.subplots_adjust(left=0.07, top=1.2, right=.7, bottom=-0.05)
+    plt.tight_layout()
+    
+    if savename is not None:
+        plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0.01)
+        plt.close(fig)
+    else:
+        plt.show()
+    
+    return fig, ax
+
+
 def plot_ica_method(
     avg_waveform, std_waveform, fs, heartbeats_dict, savename=None, key="fetal"
 ):

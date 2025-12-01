@@ -18,6 +18,7 @@ import scipy
 import scipy.signal
 import torch
 import neurokit2 as nk
+import dataclasses
 
 from fmcg.utils.plotting.report import report_hr, report_ica_components, report_m_hat_segments
 
@@ -1194,19 +1195,24 @@ class Pipeline:
         self.systemconfig = system_config
         self.measurementconfig = measurement_config
 
-        # Convert PipelineConfig to dict if needed (for backward compatibility with internal code)
-        if hasattr(config, 'to_dict'):
+        # Convert PipelineConfig (dataclass) to dict if needed for backward compatibility
+        if hasattr(config, "to_dict"):
             self.config = config.to_dict()
-            logger.debug("Converted PipelineConfig dataclass to dict format")
+            logger.debug("Converted PipelineConfig via to_dict() to dict format")
+        elif dataclasses.is_dataclass(config):
+            # Convert dataclass to plain dict
+            self.config = dataclasses.asdict(config)
+            logger.debug("Converted PipelineConfig dataclass to dict format via dataclasses.asdict")
         else:
             self.config = config
+
+        # Use the dict-like config from here on
         self.device = self.config.get("device", "cpu")
         self._step_num = 1
-
-        self.save_reports = config.get("save_reports", False)
-        self.save_plots = config.get("save_plots", False)
-        self.save_data = config.get("save_data", False)
-        self.output_dir = config.get("output_dir", "output")
+        self.save_reports = self.config.get("save_reports", False)
+        self.save_plots = self.config.get("save_plots", False)
+        self.save_data = self.config.get("save_data", False)
+        self.output_dir = self.config.get("output_dir", "output")
         self.mask = mask
         self.log_note = log_note
         self.log_dict = log_dict

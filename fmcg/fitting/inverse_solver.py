@@ -379,7 +379,7 @@ class InverseSolver:
                 return [m_dipoles.detach().cpu().numpy(), r_dipoles.detach().cpu().numpy()]
             return [m_dipoles, r_dipoles]
 
-    def initialize_parameters(self, r, field_true, m=None, method="pseudo_inv", field_scaling=1e3, determine_scaling=False, update_m_scaling=False, rcond=1e-4):
+    def initialize_parameters(self, r:torch.Tensor, field_true:torch.Tensor, m=None, method="pseudo_inv", field_scaling=1e0, determine_scaling=False, update_m_scaling=False, rcond=1e-4):
         """
         Initialize the parameters for the model.
 

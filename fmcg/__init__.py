@@ -32,6 +32,20 @@ from .config import (
     AveragingConfig,
 )
 
+# Expose commonly used submodules at package level for notebook/legacy imports
+from . import utils as utils
+from .utils import data as data
+from .utils.plotting import plot_utils as plot_utils
+from .fitting.inverse_solver import InverseSolver
+from .signal.filtering import filter_sensor_dict
+from .signal.artifact_removal import remove_outlier_dict
+from .ics import functions 
+from . import fitting
+from . import signal
+from . import analysis
+from . import ics
+
+
 __all__ = [
     "Pipeline",
     "PipelineConfig",
@@ -43,5 +57,11 @@ __all__ = [
     "LossConfig",
     "InitializerConfig",
     "AveragingConfig",
+    "utils",
+    "data",
+    "plot_utils",
+    "InverseSolver",
+    "filter_sensor_dict",
+    "remove_outlier_dict",
 ]
 __version__ = "0.1.0"
