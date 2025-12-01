@@ -45,7 +45,7 @@ from ._pipeline_utils import (
 )
 
 
-np.set_printoptions(legacy="1.25")
+np.set_printoptions(legacy="1.21")
 logger = logging.getLogger(__name__)
 
 

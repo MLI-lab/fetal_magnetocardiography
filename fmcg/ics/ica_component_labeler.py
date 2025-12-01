@@ -7,8 +7,12 @@ from copy import deepcopy
 
 import scipy
 
-
-import fmcg
+# Import fmcg submodules explicitly
+from fmcg.utils.data import load_structured_patient_data_and_noise
+from fmcg.signal.filtering import filter_sensor_dict
+from fmcg.signal.artifact_removal import remove_outlier_dict
+from fmcg.signal.whitening import apply_whitening
+from fmcg.ics.functions import apply_fastICA
 
 try:
     import ipywidgets as widgets
@@ -126,7 +130,7 @@ class ICAComponentLabeler:
     def _load_and_preprocess_data(self, params):
         print("Loading and preprocessing data...")
         # load patient data
-        sig_data_dict_raw, time, fs, noise_data_dict_raw = fmcg.data.load_structured_patient_data_and_noise(
+        sig_data_dict_raw, time, fs, noise_data_dict_raw = load_structured_patient_data_and_noise(
             params["SystemConfig"],
             params["MeasurementConfig"],
             **{k: params[k] for k in params.keys() & {"ds_path", "patient", "series", "sig_group_names", "noise_group_names"}},
@@ -140,12 +144,12 @@ class ICAComponentLabeler:
         # performing basic preprocessing (filtering and removal of outlying sensor channels)
 
         # frequency filtering (bandpass + notch)
-        sensor_dict = fmcg.signal.filter_sensor_dict(sig_data_dict_raw, fs, low=params['bandpass_low'], high=params["bandpass_high"], order=4)
-        noise_sensor_dict = fmcg.signal.filter_sensor_dict(noise_data_dict_raw, fs, low=params['bandpass_low'], high=params["bandpass_high"], order=4)
+        sensor_dict = filter_sensor_dict(sig_data_dict_raw, fs, low=params['bandpass_low'], high=params["bandpass_high"], order=4)
+        noise_sensor_dict = filter_sensor_dict(noise_data_dict_raw, fs, low=params['bandpass_low'], high=params["bandpass_high"], order=4)
 
         # remove outlying channels with unphysical range (by variability threshold + comparison across array)
-        sensor_dict, axis_mask = fmcg.signal.remove_outlier_dict(sensor_dict, physical_range_threshold=1, verbose=True)
-        noise_sensor_dict, axis_mask_noise = fmcg.signal.remove_outlier_dict(noise_sensor_dict, physical_range_threshold=.1, verbose=True)
+        sensor_dict, axis_mask = remove_outlier_dict(sensor_dict, physical_range_threshold=1, verbose=True)
+        noise_sensor_dict, axis_mask_noise = remove_outlier_dict(noise_sensor_dict, physical_range_threshold=.1, verbose=True)
 
         # axis mask provides valid channels
         axis_mask = axis_mask & axis_mask_noise
@@ -156,7 +160,7 @@ class ICAComponentLabeler:
 
         if params["whitening"]:
             # Apply whitening to the recording using noise structure
-            field_maps, W = fmcg.whitening.apply_whitening(
+            field_maps, W = apply_whitening(
                 field_maps,
                 noise_maps,
                 axis_mask,
@@ -192,7 +196,7 @@ class ICAComponentLabeler:
 
     def _apply_ica(self):
         print("Applying ICA...")
-        sources, self.ica = fmcg.ics.apply_fastICA(self.bp_data, n_comp=self.n_components, algo='parallel')
+        sources, self.ica = apply_fastICA(self.bp_data, n_comp=self.n_components, algo='parallel')
         self.sources_orig = sources.copy()
         self.ica_orig = self.ica
 
