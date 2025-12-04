@@ -28,10 +28,33 @@ def load_vcg_data(
             - ecg_II (ndarray): The ECG lead II signal.
             - fs (int): The sampling frequency of the record.
     """
+    # If no local base path is provided, try to load the record from the
+    # PhysioNet-hosted PTB-DB. Otherwise read from the provided local path.
     if base_path is None:
-        raise ValueError("base_path must be provided. Please specify the path to your local ptbdb dataset directory.")
-
-    record = wfdb.rdrecord(f"{base_path}/{record}", physical=True)
+        # Load record from the PhysioNet-hosted PTB Diagnostic ECG Database.
+        # Database URL: https://physionet.org/content/ptbdb/1.0.0/
+        # wfdb strips directory components from record_name, so we need to
+        # include any subdirectory (e.g., "patient104") in pn_dir.
+        record_dir = os.path.dirname(record)  # e.g., "patient104"
+        record_base = os.path.basename(record)  # e.g., "s0306lre"
+        if record_dir:
+            pn_dir = f"ptbdb/1.0.0/{record_dir}"
+        else:
+            pn_dir = "ptbdb/1.0.0"
+        try:
+            record = wfdb.rdrecord(record_base, physical=True, pn_dir=pn_dir)
+        except Exception as e:
+            logger.warning(
+                "Failed to load record '%s' from PhysioNet (pn_dir=%s): %s",
+                record_base, pn_dir, e
+            )
+            raise ValueError(
+                f"Could not load record '{record}' from PhysioNet. "
+                "Provide a local base_path or check the record name. "
+                f"Error: {e}"
+            ) from e
+    else:
+        record = wfdb.rdrecord(f"{base_path}/{record}", physical=True)
     fs = record.fs
 
     # retrieve ordered indices of the signals in the record
