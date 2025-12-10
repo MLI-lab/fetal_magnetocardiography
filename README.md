@@ -51,17 +51,6 @@ See the `examples/` directory for detailed usage:
 - `custom_config.py` - Advanced configuration options
 - Tutorial notebooks in `fmcg/examples/` (ICA annotation, etc.)
 
-## Testing
-
-Run tests:
-```bash
-pytest
-```
-
-Run tests with coverage:
-```bash
-pytest --cov=fmcg --cov-report=html
-```
 
 ## Module Structure
 
@@ -92,12 +81,6 @@ config = PipelineConfig(
         optimizer="lamb",
     ),
 )
-```
-
-Backward compatible with dict configs:
-```python
-config_dict = {...}  # Your old dict config
-config = PipelineConfig.from_dict(config_dict)
 ```
 
 ## License
