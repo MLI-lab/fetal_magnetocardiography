@@ -91,7 +91,7 @@ The main class orchestrating the complete fMCG analysis workflow:
 - **Artifact Removal**: Wavelet-based artifact detection
 - **Whitening**: PCA/ZCA whitening using noise covariance
 
-### 3. Forward Model (`fmcg.fitting.ForwardModel`)
+### 3. Forward Model (`fmcg.fitting.field_model.ForwardModel`)
 Implements the magnetic field forward model for dipole sources:
 - Biot-Savart law for magnetic field computation
 - GPU-accelerated tensor operations
