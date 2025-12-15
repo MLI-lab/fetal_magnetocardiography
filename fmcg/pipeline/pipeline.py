@@ -35,7 +35,6 @@ from ._pipeline_utils import (
     _initialize_solver_parameters,
     _plot_averaged_beats_if_enabled,
     _process_dipole_data,
-    _save_pipeline_data,
     _segment_and_average_beats,
     _solve_segment,
     _apply_wavelet_denoising,
@@ -211,9 +210,13 @@ class Pipeline:
             if self.log_dict and f"selected_beats_{k}" in self.log_dict and f"selected_hr_{k}" in self.log_dict:
                 logger.info(f"Found {k} {self.log_dict[f'selected_beats_{k}']:.2f} heartbeats with mean HR {self.log_dict[f'selected_hr_{k}']:.2f} bpm")
 
-        # Save data if required
+        # Save data if required - unified pickle file format
         if self.save_data:
-            _save_pipeline_data(self.output_dir, self.heartbeats_dict, self.data_dict)
+            with open(os.path.join(self.output_dir, "pipeline_results.pkl"), "wb") as f:
+                pickle.dump({
+                    "data_dict": self.data_dict,
+                    "heartbeats_dict": self.heartbeats_dict,
+                }, f)
         
         # Plot results
         _plot_averaged_beats_if_enabled(
