@@ -64,10 +64,12 @@ def _create_inverse_solver(config, N, axis_mask, W):
 
 def _initialize_solver_parameters(mdl, r_init, y, config):
     """Initialize solver parameters."""
+    device = config.get("device", "cpu")
+
     if not isinstance(y, torch.Tensor):
-        y = torch.tensor(y, dtype=torch.float32, device=config["device"])
+        y = torch.tensor(y, dtype=torch.float32, device=device)
     if not isinstance(r_init, torch.Tensor):
-        r_init = torch.tensor(r_init, dtype=torch.float32, device=config["device"])
+        r_init = torch.tensor(r_init, dtype=torch.float32, device=device)
 
     return mdl.initialize_parameters(
         r_init,
@@ -75,7 +77,7 @@ def _initialize_solver_parameters(mdl, r_init, y, config):
         field_scaling=config["solver"]["initializer"]["field_scaling"],
         update_m_scaling=config["solver"]["initializer"]["update_m_scaling"],
         method=config["solver"]["initializer"]["method"],
-        m = torch.zeros(y.shape[0], mdl.num_dipoles, 3, device=config["device"])*1e-12 if config["solver"]["initializer"]["method"] == "given" else None,
+        m = torch.zeros(y.shape[0], mdl.num_dipoles, 3, device=device)*1e-12 if config["solver"]["initializer"]["method"] == "given" else None,
         rcond=config["solver"]["initializer"]["rcond"],
         determine_scaling=config["solver"]["initializer"]["determine_scaling"],
     )
@@ -253,8 +255,8 @@ def _process_segment_worker(args):
         # Import required modules within worker
         import torch
         import numpy as np
-        from utils import data, utils
-        from fitting.inverse_solver import InverseSolver
+        from fmcg.utils import data, utils
+        from fmcg.fitting.inverse_solver import InverseSolver
 
         N = segment_data.shape[0]
         y = torch.tensor(segment_data, dtype=torch.float32, device=device)
