@@ -264,7 +264,6 @@ class InverseSolver:
                 factor=0.9,
                 patience=patience, 
                 threshold=1e-5,
-                verbose=False
             )
             plateau_schedulers.append(plateau_scheduler)
             
