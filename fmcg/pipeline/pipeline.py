@@ -618,6 +618,10 @@ class Pipeline:
                         f"Using threaded parallel processing with {max_workers} workers on {self.device}"
                     )
 
+                    # Clear CUDA cache before starting
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+
                     # Process segments using threading
                     self.segment_results = []
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:

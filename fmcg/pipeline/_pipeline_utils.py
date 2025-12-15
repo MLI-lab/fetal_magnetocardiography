@@ -2,6 +2,7 @@ import logging
 import os
 import pickle
 import traceback
+import threading
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,10 @@ from ..analysis import heartbeats
 from ..signal.filtering import wavelet_denoise
 
 logger = logging.getLogger(__name__)
+
+# Global lock for CUDA initialization in threaded workers
+# This prevents multiple threads from initializing CUDA context simultaneously
+_cuda_init_lock = threading.Lock()
 
 
 def _create_basis_dict(config, N):
@@ -64,10 +69,12 @@ def _create_inverse_solver(config, N, axis_mask, W):
 
 def _initialize_solver_parameters(mdl, r_init, y, config):
     """Initialize solver parameters."""
+    device = config.get("device", "cpu")
+
     if not isinstance(y, torch.Tensor):
-        y = torch.tensor(y, dtype=torch.float32, device=config["device"])
+        y = torch.tensor(y, dtype=torch.float32, device=device)
     if not isinstance(r_init, torch.Tensor):
-        r_init = torch.tensor(r_init, dtype=torch.float32, device=config["device"])
+        r_init = torch.tensor(r_init, dtype=torch.float32, device=device)
 
     return mdl.initialize_parameters(
         r_init,
@@ -75,7 +82,7 @@ def _initialize_solver_parameters(mdl, r_init, y, config):
         field_scaling=config["solver"]["initializer"]["field_scaling"],
         update_m_scaling=config["solver"]["initializer"]["update_m_scaling"],
         method=config["solver"]["initializer"]["method"],
-        m = torch.zeros(y.shape[0], mdl.num_dipoles, 3, device=config["device"])*1e-12 if config["solver"]["initializer"]["method"] == "given" else None,
+        m = torch.zeros(y.shape[0], mdl.num_dipoles, 3, device=device)*1e-12 if config["solver"]["initializer"]["method"] == "given" else None,
         rcond=config["solver"]["initializer"]["rcond"],
         determine_scaling=config["solver"]["initializer"]["determine_scaling"],
     )
@@ -253,8 +260,8 @@ def _process_segment_worker(args):
         # Import required modules within worker
         import torch
         import numpy as np
-        from utils import data, utils
-        from fitting.inverse_solver import InverseSolver
+        from fmcg.utils import data, utils
+        from fmcg.fitting.inverse_solver import InverseSolver
 
         N = segment_data.shape[0]
         y = torch.tensor(segment_data, dtype=torch.float32, device=device)
@@ -312,16 +319,22 @@ def _process_segment_worker_threaded(
         N = segment_data.shape[0]
         # Use the device from pipeline config
         device = pipeline_ref.config.get("device", "cpu")
-        y = torch.tensor(segment_data, dtype=torch.float32, device=device)
 
-        # Initialize solver and parameters
-        r_init = np.repeat(pipeline_ref.config["solver"]["r_init"], N, axis=0)
-        mdl = _create_inverse_solver(
-            pipeline_ref.config, N, pipeline_ref.axis_mask, pipeline_ref.W
-        )
-        initial_parameters, field_true = _initialize_solver_parameters(
-            mdl, r_init, y, pipeline_ref.config
-        )
+        # Use lock for CUDA initialization to prevent thread contention
+        # This serializes GPU memory allocation and model initialization
+        with _cuda_init_lock if device.startswith("cuda") else threading.Lock():
+            init_start_time = time.perf_counter()
+
+            y = torch.tensor(segment_data, dtype=torch.float32, device=device)
+
+            # Initialize solver and parameters
+            r_init = np.repeat(pipeline_ref.config["solver"]["r_init"], N, axis=0)
+            mdl = _create_inverse_solver(
+                pipeline_ref.config, N, pipeline_ref.axis_mask, pipeline_ref.W
+            )
+            initial_parameters, field_true = _initialize_solver_parameters(
+                mdl, r_init, y, pipeline_ref.config
+            )
 
         # Solve for this segment
         m_hat, r_hat = _solve_segment(
