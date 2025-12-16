@@ -587,28 +587,46 @@ def detect_hr_outlier(peaks, fs, win=4, threshold=30, plot=False):
     """
 
     hr = 60 * fs / np.diff(peaks)
-    hr = np.pad(
-        hr, pad_width=(win // 2, win // 2), mode="constant", constant_values=np.mean(hr)
-    )
-    running_mean = np.convolve(hr, np.ones((win,)) / win, mode="same")
+
+    # Compute backward-looking running mean (mean of PREVIOUS win intervals, NOT including current)
+    # This ensures outliers don't dilute their own detection
+    running_mean = np.zeros_like(hr)
+    for i in range(len(hr)):
+        if i == 0:
+            # First beat: no previous values, use global mean
+            running_mean[i] = np.mean(hr)
+        elif i < win:
+            # Not enough previous values: use all previous
+            running_mean[i] = np.mean(hr[:i])
+        else:
+            # Sufficient history: use previous win values
+            running_mean[i] = np.mean(hr[i-win:i])
 
     if plot:
         fig, axs = plt.subplots(2, 1, figsize=(7.11, 3), sharex=True)
-        axs[0].plot(hr[win - 1 :])
-        axs[0].plot(running_mean[win - 1 :])
-        axs[0].legend(["Heart Rate", "Running Mean"])
+        axs[0].plot(hr)
+        axs[0].plot(running_mean)
+        axs[0].legend(["Heart Rate", "Running Mean (previous)"])
         axs[0].set_ylabel("Heart Rate [bpm]")
         axs[0].set_xlabel("Beats")
 
-        axs[1].plot((np.absolute(hr - running_mean) / running_mean * 100)[win - 1 :])
+        pct_deviation = np.absolute(hr - running_mean) / running_mean * 100
+        axs[1].plot(pct_deviation)
         axs[1].hlines(threshold, 0, len(hr), color="k", linestyle="--")
         axs[1].legend(["Percentage Deviation", "Threshold"])
         axs[1].set_ylabel("Mean Deviation [%]")
         axs[1].set_xlabel("Beats")
 
-    return (np.absolute(hr - running_mean) / running_mean * 100 > threshold)[
-        win // 2 : -1
-    ]
+    # Compute percentage deviation and detect outliers
+    pct_deviation = np.absolute(hr - running_mean) / running_mean * 100
+    outliers = pct_deviation > threshold
+
+    # Pad to length len(peaks) to maintain compatibility with existing code
+    # outliers[i] indicates if HR between peaks[i] and peaks[i+1] is an outlier
+    # outliers[len(peaks)-1] is padded (not meaningful, rarely used)
+    outliers_padded = np.pad(outliers, pad_width=(0, 1), mode='constant', constant_values=False)
+
+    return outliers_padded
 
 
 def correct_peaks(sig, peaks, fs, window=0.02, inverted=False):
