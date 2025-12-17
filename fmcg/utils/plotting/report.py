@@ -336,6 +336,133 @@ def report_m_hat_segments(
     logger.info(f"Segmented m_hat plots saved to: {pdf_path}")
 
 
+def report_r_hat_segments(
+    data_dict,
+    time_,
+    output_dir,
+    segment_duration=5,
+    label=["Fetal", "Maternal"],
+    window_boundaries=None,
+):
+    """
+    Generates segmented plots of dipole positions (`r_hat`) for each entry in `data_dict` and saves them to a multi-page PDF report.
+
+    Each plot displays the x, y, and z components of the dipole positions over time, segmented into windows of specified duration. Artifact regions, if present, are highlighted. The report is formatted for A4 pages, with multiple segments per page.
+
+    Args:
+        data_dict (dict): Dictionary containing dipole position data for each key. Each entry should have a "position" ndarray of shape (n_samples, 3), and optionally an "artifacts" boolean array of shape (n_samples,).
+        time_ (np.ndarray): 1D array of time points corresponding to the dipole position samples.
+        output_dir (str): Directory path where the PDF report will be saved.
+        segment_duration (int, optional): Duration (in seconds) of each segment to plot. Defaults to 5.
+        label (list of str, optional): List of labels for each key in `data_dict`, used in plot titles. Defaults to ["Fetal", "Maternal"].
+        window_boundaries (list of tuple, optional): List of (start_idx, end_idx) for processing windows to visualize.
+    """
+
+    # Create PDF backend
+    pdf_path = os.path.join(output_dir, "2_dipole_positions_REPORT.pdf")
+    pdf = matplotlib.backends.backend_pdf.PdfPages(pdf_path)
+
+    # Constants for A4 size and layout
+    A4_WIDTH, A4_HEIGHT = 8.27, 11.69  # inches
+    ROW_HEIGHT = 2  # inches per row
+    MAX_ROWS = int((A4_HEIGHT - 1) / ROW_HEIGHT)  # Leave 1 inch for title and margins
+
+    # Calculate segment indices
+    fs = int(1 / (time_[1] - time_[0]))  # Sampling frequency
+    segment_samples = segment_duration * fs
+    num_segments = int(np.ceil(len(time_) / segment_samples))
+
+    for k, key in enumerate(data_dict.keys()):
+        # skip if no dipole positions are available
+        if "position" not in data_dict[key]:
+            continue
+
+        r_hat = data_dict[key]["position"] * 100  # Convert to cm for display
+
+        for page_idx in range(0, num_segments, MAX_ROWS):
+            fig, axes = plt.subplots(
+                nrows=MAX_ROWS, ncols=1, figsize=(A4_WIDTH, A4_HEIGHT), sharex=False
+            )
+
+            # disable axes that are not used
+            for i in range(MAX_ROWS):
+                if page_idx + i >= num_segments:
+                    axes[i].axis("off")
+
+            for row_idx, ax in enumerate(axes):
+                segment_idx = page_idx + row_idx
+                if segment_idx >= num_segments:
+                    break
+
+                start = segment_idx * segment_samples
+                end = min((segment_idx + 1) * segment_samples, len(time_))
+
+                ax.plot(time_[start:end], r_hat[start:end, 0], label="x", zorder=3)
+                ax.plot(time_[start:end], r_hat[start:end, 1], label="y", zorder=3)
+                ax.plot(time_[start:end], r_hat[start:end, 2], label="z", zorder=3)
+                ax.set_title(
+                    f"{label[k]}: {time_[start]:.1f}s to {time_[end - 1]:.1f}s"
+                )
+                ax.set_ylabel("Position [cm]")
+                ax.grid(True, zorder=0)
+                ax.legend(loc="upper right")
+
+                # Highlight artifact regions
+                if (
+                    "artifacts" in data_dict[key]
+                    and len(data_dict[key]["artifacts"]) > 0
+                ):
+                    # Get y-limits for the current segment
+                    segment_data = r_hat[start:end]
+                    y_min = np.nanmin(segment_data) if not np.all(np.isnan(segment_data)) else -1
+                    y_max = np.nanmax(segment_data) if not np.all(np.isnan(segment_data)) else 1
+                    
+                    ax.fill_between(
+                        time_[start:end],
+                        y_min,
+                        y_max,
+                        where=data_dict[key]["artifacts"][start:end],
+                        alpha=0.3,
+                        zorder=1,
+                        interpolate=False,
+                        label="Artifact",
+                        color="red",
+                    )
+                
+                # Plot window boundaries if provided
+                if window_boundaries:
+                    plotted_boundaries = False
+                    for w_start, w_end in window_boundaries:
+                        # Convert indices to time
+                        if w_start < len(time_):
+                            t_start = time_[w_start]
+                            # Check if start is within current plot range
+                            if t_start >= time_[start] and t_start <= time_[end - 1]:
+                                ax.axvline(x=t_start, color='blue', linestyle='--', alpha=0.6, linewidth=1.5, zorder=2,
+                                          label='Window Start' if not plotted_boundaries else '')
+                                plotted_boundaries = True
+                        
+                        # Handle end index
+                        if w_end < len(time_):
+                            t_end = time_[w_end]
+                        else:
+                            t_end = time_[-1]
+
+                        # Check if end is within current plot range
+                        if t_end >= time_[start] and t_end <= time_[end - 1]:
+                            ax.axvline(x=t_end, color='green', linestyle=':', alpha=0.6, linewidth=1.5, zorder=2,
+                                      label='Window End' if not plotted_boundaries else '')
+
+            axes[-1].set_xlabel("Time [s]")
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    pdf.close()
+
+    logger.info(f"Segmented r_hat plots saved to: {pdf_path}")
+
+
 def report_ica_components(
     data_dict,
     time_,
