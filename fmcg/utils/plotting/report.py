@@ -215,6 +215,7 @@ def report_m_hat_segments(
     output_dir,
     segment_duration=5,
     label=["Fetal", "Maternal"],
+    window_boundaries=None,
 ):
     """
     Generates segmented plots of dipole moments (`m_hat`) for each entry in `data_dict` and saves them to a multi-page PDF report.
@@ -227,6 +228,7 @@ def report_m_hat_segments(
         output_dir (str): Directory path where the PDF report will be saved.
         segment_duration (int, optional): Duration (in seconds) of each segment to plot. Defaults to 5.
         label (list of str, optional): List of labels for each key in `data_dict`, used in plot titles. Defaults to ["Fetal", "Maternal"].
+        window_boundaries (list of tuple, optional): List of (start_idx, end_idx) for processing windows to visualize.
     """
 
     # Create PDF backend
@@ -293,6 +295,26 @@ def report_m_hat_segments(
                         label="Artifact",
                         color="orange",
                     )
+                
+                # Plot window boundaries if provided
+                if window_boundaries:
+                    for w_start, w_end in window_boundaries:
+                        # Convert indices to time
+                        if w_start < len(time_):
+                            t_start = time_[w_start]
+                            # Check if start is within current plot range
+                            if t_start >= time_[start] and t_start <= time_[end - 1]:
+                                ax.axvline(x=t_start, color='g', linestyle='--', alpha=0.5, linewidth=1)
+                        
+                        # Handle end index
+                        if w_end < len(time_):
+                            t_end = time_[w_end]
+                        else:
+                            t_end = time_[-1]
+
+                        # Check if end is within current plot range
+                        if t_end >= time_[start] and t_end <= time_[end - 1]:
+                            ax.axvline(x=t_end, color='r', linestyle=':', alpha=0.5, linewidth=1)
 
             axes[-1].set_xlabel("Time [s]")
             plt.tight_layout()

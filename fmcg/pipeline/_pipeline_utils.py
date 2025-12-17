@@ -14,6 +14,92 @@ from ..signal.filtering import wavelet_denoise
 
 logger = logging.getLogger(__name__)
 
+# --- Multiprocessing worker for overlapping window processing ---
+def _process_window_worker(args):
+    """
+    Worker function for multiprocess window processing.
+
+    Parameters
+    ----------
+    args : tuple
+        (window_data, window_time, start, end, segment_idx, config, axis_mask, W, fs_, initial_parameters_slice, field_true_slice)
+    """
+    (
+        window_data,
+        window_time,
+        start,
+        end,
+        segment_idx,
+        config,
+        axis_mask,
+        W,
+        fs_,
+        initial_parameters_slice,
+        field_true_slice,
+    ) = args
+
+    # Import here to avoid issues with multiprocessing
+    from fmcg.fitting.inverse_solver import InverseSolver
+    import torch
+    import numpy as np
+
+    N = window_data.shape[0]
+    device = config.get("device", "cpu")
+    
+    # If field_true_slice is provided, use it (it's already scaled/processed)
+    # Otherwise fall back to window_data (but this shouldn't happen with new logic)
+    if field_true_slice is not None:
+        y = torch.tensor(field_true_slice, dtype=torch.float32, device=device)
+    else:
+        y = torch.tensor(window_data, dtype=torch.float32, device=device)
+
+    # Create solver for this window
+    mdl = InverseSolver(
+        data.generate_array_coordinates(grid_shape=(4, 4), grid_spacing=0.04, y=0),
+        num_dipoles=config["solver"]["num_dipoles"],
+        scaling=dict(m=config["solver"]["m_scaling"]),
+        basis=None,  # If needed, pass basis config
+        axis_mask=axis_mask,
+        device="cpu",  # Force CPU for multiprocessing
+        method=config["solver"]["optimizer"],
+        whitening_matrix=W,
+        verbose=False,
+    )
+
+    # Use provided initial parameters
+    # Ensure they are on the correct device
+    initial_parameters = {}
+    if initial_parameters_slice is not None:
+        for k, v in initial_parameters_slice.items():
+            if v is not None:
+                initial_parameters[k] = torch.tensor(v, dtype=torch.float32, device=device)
+            else:
+                initial_parameters[k] = None
+    else:
+        # Fallback to local initialization (should not be reached if logic is correct)
+        r_init = np.repeat(config["solver"]["r_init"], N, axis=0)
+        from ._pipeline_utils import _initialize_solver_parameters
+        initial_parameters, y = _initialize_solver_parameters(mdl, r_init, y, config)
+
+    from ._pipeline_utils import _solve_segment, _apply_wavelet_denoising
+    
+    # Solve
+    m_hat, r_hat = _solve_segment(mdl, y, initial_parameters, config, segment_idx=segment_idx)
+    m_hat = _apply_wavelet_denoising(m_hat, config)
+
+    # Convert to numpy if needed
+    if hasattr(m_hat, "cpu"):
+        m_hat = m_hat.cpu().numpy()
+    if hasattr(r_hat, "cpu"):
+        r_hat = r_hat.cpu().numpy()
+
+    return {
+        'start': start,
+        'end': end,
+        'm_hat': m_hat,
+        'r_hat': r_hat,
+        'segment_idx': segment_idx
+    }
 
 def _create_basis_dict(config, N):
     """Create basis dictionary for solver configuration."""
@@ -240,6 +326,211 @@ def _find_continuous_segments(mask, min_length=None):
         ]
 
     return segments
+
+def _create_overlapping_windows(
+    signal_length,
+    window_length_samples,
+    overlap_samples,
+    min_window_samples=None
+):
+    """
+    Create overlapping window indices for a signal.
+
+    Parameters
+    ----------
+    signal_length : int
+        Total length of signal in samples
+    window_length_samples : int
+        Target window size in samples
+    overlap_samples : int
+        Overlap between consecutive windows in samples
+    min_window_samples : int, optional
+        Minimum acceptable window size (default: window_length_samples // 2)
+
+    Returns
+    -------
+    windows : list of tuple
+        List of (start_idx, end_idx) for each window
+    """
+    if min_window_samples is None:
+        min_window_samples = window_length_samples // 2
+
+    step_size = window_length_samples - overlap_samples
+
+    if step_size <= 0:
+        raise ValueError(
+            f"Invalid configuration: window_length ({window_length_samples}) "
+            f"must be greater than overlap ({overlap_samples})"
+        )
+
+    windows = []
+    current_start = 0
+
+    while current_start < signal_length:
+        current_end = min(current_start + window_length_samples, signal_length)
+        window_size = current_end - current_start
+
+        # Add window if it meets minimum size requirement
+        if window_size >= min_window_samples:
+            windows.append((current_start, current_end))
+
+        # Check if we've reached the end
+        if current_end >= signal_length:
+            break
+
+        # Move to next window start
+        current_start += step_size
+
+    # Handle edge case: extend last window if there's a small remainder
+    if windows and windows[-1][1] < signal_length:
+        remainder = signal_length - windows[-1][1]
+        if remainder < min_window_samples:
+            # Extend last window to cover remainder
+            windows[-1] = (windows[-1][0], signal_length)
+
+    return windows
+
+
+def _windows_from_segments(
+    segments,
+    window_length_samples,
+    overlap_samples,
+    min_window_samples=None
+):
+    """
+    Generate overlapping windows within each segment.
+
+    Parameters
+    ----------
+    segments : list of tuple
+        List of (start, end) segment indices
+    window_length_samples : int
+        Target window size in samples
+    overlap_samples : int
+        Overlap between consecutive windows
+    min_window_samples : int, optional
+        Minimum acceptable window size
+
+    Returns
+    -------
+    windows : list of dict
+        List of window info dictionaries:
+        {
+            'start': int,           # Global start index
+            'end': int,             # Global end index
+            'segment_idx': int,     # Which segment this window belongs to
+            'local_start': int,     # Start relative to segment
+            'local_end': int        # End relative to segment
+        }
+    """
+    if min_window_samples is None:
+        min_window_samples = window_length_samples // 2
+
+    all_windows = []
+
+    for seg_idx, (seg_start, seg_end) in enumerate(segments):
+        segment_length = seg_end - seg_start
+
+        # Skip segments smaller than minimum window size
+        if segment_length < min_window_samples:
+            logger.warning(
+                f"Segment {seg_idx} (length={segment_length}) is smaller than "
+                f"min_window_samples ({min_window_samples}), skipping"
+            )
+            continue
+
+        # Generate windows for this segment
+        local_windows = _create_overlapping_windows(
+            segment_length,
+            window_length_samples,
+            overlap_samples,
+            min_window_samples
+        )
+
+        # Convert to global coordinates and add metadata
+        for local_start, local_end in local_windows:
+            all_windows.append({
+                'start': seg_start + local_start,
+                'end': seg_start + local_end,
+                'segment_idx': seg_idx,
+                'local_start': local_start,
+                'local_end': local_end
+            })
+
+    return all_windows
+
+
+def _merge_overlapping_windows(
+    window_results,
+    total_length,
+    num_dipoles=2,
+    merge_method="average"
+):
+    """
+    Merge overlapping window results by averaging.
+
+    Parameters
+    ----------
+    window_results : list of dict
+        Results from each window:
+        {
+            'start': int,
+            'end': int,
+            'm_hat': np.ndarray (window_len, num_dipoles, 3),
+            'r_hat': np.ndarray (window_len, num_dipoles, 3),
+            'segment_idx': int (optional)
+        }
+    total_length : int
+        Total length of reconstructed signal
+    num_dipoles : int
+        Number of dipoles
+    merge_method : str
+        Merging strategy ("average")
+
+    Returns
+    -------
+    m_hat : np.ndarray
+        Merged dipole moments (total_length, num_dipoles, 3)
+    r_hat : np.ndarray
+        Merged dipole positions (total_length, num_dipoles, 3)
+    overlap_counts : np.ndarray
+        Number of contributing windows per sample (total_length,)
+    """
+    # Initialize accumulators
+    m_sum = np.zeros((total_length, num_dipoles, 3), dtype=np.float64)
+    r_sum = np.zeros((total_length, num_dipoles, 3), dtype=np.float64)
+    counts = np.zeros(total_length, dtype=np.int32)
+
+    # Accumulate results from each window
+    for result in window_results:
+        start = result['start']
+        end = result['end']
+        window_len = end - start
+
+        m_hat = result['m_hat']
+        r_hat = result['r_hat']
+
+        # Validate dimensions
+        if m_hat.shape[0] != window_len:
+            logger.warning(
+                f"Window length mismatch: expected {window_len}, got {m_hat.shape[0]}"
+            )
+            continue
+
+        # Accumulate
+        m_sum[start:end] += m_hat
+        r_sum[start:end] += r_hat
+        counts[start:end] += 1
+
+    # Average (divide by counts, handle zeros with NaN)
+    m_hat_merged = np.full_like(m_sum, np.nan)
+    r_hat_merged = np.full_like(r_sum, np.nan)
+
+    valid_mask = counts > 0
+    m_hat_merged[valid_mask] = m_sum[valid_mask] / counts[valid_mask, None, None]
+    r_hat_merged[valid_mask] = r_sum[valid_mask] / counts[valid_mask, None, None]
+
+    return m_hat_merged, r_hat_merged, counts
 
 
 def _process_segment_worker(args):

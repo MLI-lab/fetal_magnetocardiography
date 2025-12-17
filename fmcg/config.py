@@ -3,6 +3,33 @@ Configuration dataclasses for the fMCG pipeline.
 
 This module provides structured configuration classes that replace the dictionary-based
 configuration system, offering type hints, validation, and better IDE support.
+
+Example configurations for overlapping window processing:
+
+    # Overlapping windows only (no artifact segmentation)
+    preprocessing = PreprocessingConfig(
+        process_segments=False,
+        enable_overlapping_windows=True,
+        window_length=60.0,      # 60-second windows
+        window_overlap=0.5,      # 50% overlap (30 seconds)
+    )
+
+    # Overlapping windows with artifact segmentation
+    preprocessing = PreprocessingConfig(
+        process_segments=True,
+        min_segment_length=30.0,
+        enable_overlapping_windows=True,
+        window_length=45.0,      # 45-second windows
+        window_overlap=15.0,     # 15-second overlap (absolute)
+    )
+
+    # Small windows for memory efficiency
+    preprocessing = PreprocessingConfig(
+        enable_overlapping_windows=True,
+        window_length=20.0,      # 20-second windows
+        window_overlap=0.75,     # 75% overlap (15 seconds)
+        min_window_size_ratio=0.6,
+    )
 """
 
 from dataclasses import dataclass, field, asdict
@@ -64,6 +91,42 @@ class PreprocessingConfig:
     downsample_factor: int = 2
     process_segments: bool = True
     min_segment_length: float = 10.0
+
+    # Overlapping window parameters
+    enable_overlapping_windows: bool = False
+    window_length: float = 60.0  # Window size in seconds
+    window_overlap: Union[float, int] = 0.5  # Overlap: <1.0=ratio, >=1.0=seconds
+    overlap_merge_method: str = "average"  # Future: "weighted", "ola"
+    min_window_size_ratio: float = 0.5  # Minimum window as fraction of target
+
+    def __post_init__(self):
+        """Validate overlapping window parameters."""
+        if self.enable_overlapping_windows:
+            # Validate window_length
+            if self.window_length <= 0:
+                raise ValueError("window_length must be positive")
+
+            # Validate overlap
+            if isinstance(self.window_overlap, float) and self.window_overlap < 1.0:
+                # Ratio mode
+                if not 0.0 <= self.window_overlap < 1.0:
+                    raise ValueError("window_overlap ratio must be in [0, 1)")
+            elif self.window_overlap >= self.window_length:
+                raise ValueError("window_overlap must be less than window_length")
+
+            # Validate min_window_size_ratio
+            if not 0.0 < self.min_window_size_ratio <= 1.0:
+                raise ValueError("min_window_size_ratio must be in (0, 1]")
+
+            # Warning for small overlap
+            overlap_abs = (self.window_overlap if self.window_overlap >= 1.0
+                          else self.window_overlap * self.window_length)
+            if overlap_abs / self.window_length < 0.1:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Small overlap ({overlap_abs:.1f}s) may cause discontinuities at window boundaries"
+                )
 
 
 @dataclass
