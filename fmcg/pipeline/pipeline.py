@@ -195,9 +195,11 @@ class Pipeline:
         between segmented and non-segmented processing.
         """
         # Process the dipole moments
+        # Pass artifact mask if available (for overlapping windows)
+        artifacts_mask = getattr(self, "artifacts_mask", None)
         self.data_dict = _process_dipole_data(
             self.m_hat, self.r_hat, self.fs_, self.config, 
-            self.log_dict, False
+            self.log_dict, False, artifacts_mask=artifacts_mask
         )
         
         # Segment and average heartbeats
@@ -1018,26 +1020,23 @@ class Pipeline:
             num_dipoles,
             merge_method
         )
+        
+        # Create artifact mask for visualization
+        # Mark regions as artifacts if they are: (1) in artifact_gaps, or (2) not covered by any window
+        self.artifacts_mask = np.zeros(total_length, dtype=bool)
+        
         if hasattr(self, "artifact_gaps") and self.artifact_gaps:
             for gap_start, gap_end in self.artifact_gaps:
-                # Fill gaps with small noise instead of 0.0 to avoid issues with ICA/VG in post-processing
-                # Flat lines can cause IndexError in neurokit2's visibility graph method
-                gap_len = gap_end - gap_start
-                if gap_len > 0:
-                    m_hat[gap_start:gap_end] = np.random.normal(0, 1e-12, (gap_len, num_dipoles, 3))
-                    r_hat[gap_start:gap_end] = np.random.normal(0, 1e-12, (gap_len, num_dipoles, 3))
-                overlap_counts[gap_start:gap_end] = 0
+                if gap_end > gap_start:
+                    self.artifacts_mask[gap_start:gap_end] = True
         
-        # Also fill any other NaNs that might have occurred (e.g. uncovered regions)
-        # Use small noise for NaNs as well
-        nan_mask_m = np.isnan(m_hat)
-        if np.any(nan_mask_m):
-            m_hat[nan_mask_m] = np.random.normal(0, 1e-12, np.sum(nan_mask_m))
-            
-        nan_mask_r = np.isnan(r_hat)
-        if np.any(nan_mask_r):
-            r_hat[nan_mask_r] = np.random.normal(0, 1e-12, np.sum(nan_mask_r))
-
+        # Also mark uncovered regions as artifacts
+        uncovered_mask = (overlap_counts == 0)
+        self.artifacts_mask = self.artifacts_mask | uncovered_mask
+        
+        # Keep NaN values in artifact regions for proper visualization
+        # The plotting and post-processing code should handle NaNs appropriately
+        
         self.m_hat = m_hat
         self.r_hat = r_hat
         self.overlap_counts = overlap_counts
@@ -1049,6 +1048,14 @@ class Pipeline:
             f"{valid_samples}/{total_length} samples covered, "
             f"avg overlap={avg_overlap:.1f}x, max overlap={max_overlap}x"
         )
+        
+        # Log artifact statistics
+        artifact_samples = np.sum(self.artifacts_mask)
+        if artifact_samples > 0:
+            logger.info(
+                f"Artifact regions: {artifact_samples}/{total_length} samples "
+                f"({artifact_samples/self.fs_:.2f}s, {100*artifact_samples/total_length:.1f}%)"
+            )
 
     def _compute_artifact_gaps(self):
         if not hasattr(self, "processing_segments"):

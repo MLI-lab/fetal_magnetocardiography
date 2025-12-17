@@ -213,6 +213,139 @@ def _process_dipole_data(
     # 1. Pipeline-level segmentation (process_segments): Based on artifact detection
     # 2. Post-processing segmentation (segment_length): Based on fixed time windows for ICA/LMS
     
+    # If artifacts_mask is provided, process clean segments separately (like segmented processing)
+    # ICA and other algorithms cannot handle NaN values
+    if artifacts_mask is not None:
+        # Find continuous clean segments
+        valid_mask = ~artifacts_mask
+        
+        # Also check for NaN values in the data itself
+        nan_mask_m = np.isnan(m_hat).any(axis=(1, 2))
+        nan_mask_r = np.isnan(r_hat).any(axis=(1, 2))
+        valid_mask = valid_mask & ~nan_mask_m & ~nan_mask_r
+        
+        # Find clean segment boundaries
+        clean_segments = []
+        in_segment = False
+        start_idx = 0
+        
+        for i in range(len(valid_mask)):
+            if valid_mask[i] and not in_segment:
+                start_idx = i
+                in_segment = True
+            elif not valid_mask[i] and in_segment:
+                clean_segments.append((start_idx, i))
+                in_segment = False
+        
+        if in_segment:
+            clean_segments.append((start_idx, len(valid_mask)))
+        
+        logger.info(f"Processing {len(clean_segments)} clean segments for post-processing")
+        
+        # Process each segment separately and combine results
+        all_beats_data = {}
+        for key in ["fetal", "maternal"]:
+            all_beats_data[key] = {
+                "dipole_moments": [],
+                "components": [],
+                "peaks": [],
+                "hr": [],
+                "outlier": [],
+                "position": [],
+                "artifacts": []
+            }
+        
+        for seg_idx, (seg_start, seg_end) in enumerate(clean_segments):
+            # Extract segment data
+            m_hat_seg = m_hat[seg_start:seg_end]
+            r_hat_seg = r_hat[seg_start:seg_end]
+            
+            # Process this segment
+            seg_data_dict = heartbeats.detect_heartbeats(
+                m_hat_seg,
+                r_hat_seg,
+                fs,
+                show_plots=False,
+                method=config["post_processing"]["method"],
+                decomposition=config["post_processing"].get("decomposition", "ica"),
+                outlier_kwargs=config["post_processing"]["averaging"].get(
+                    "outlier_kwargs", {"win": 4, "threshold": 10}
+                ),
+                savename=None,
+                log_dict=None,  # Don't log per-segment stats
+                n_trials=config["post_processing"]["n_trials"],
+                segment_length=config["post_processing"].get("segment_length", None),
+                ica_components=config["post_processing"]["ica_components"],
+                mu=config["post_processing"]["mu"],
+                tol=config["post_processing"]["averaging"]["tol"],
+                nlms=config["post_processing"].get("nlms", False),
+                verbose=False,
+            )
+            
+            # Combine segment results (like _combine_segment_results)
+            for key in ["fetal", "maternal"]:
+                # Add artifacts before this segment
+                if seg_idx == 0 and seg_start > 0:
+                    artifact_length = seg_start
+                    all_beats_data[key]["hr"].extend([np.nan] * artifact_length)
+                    all_beats_data[key]["position"].extend([[np.nan, np.nan, np.nan]] * artifact_length)
+                    all_beats_data[key]["artifacts"].extend([True] * artifact_length)
+                    all_beats_data[key]["dipole_moments"].extend([[np.nan, np.nan, np.nan]] * artifact_length)
+                    all_beats_data[key]["components"].extend([np.nan] * artifact_length)
+                    # Note: outlier is NOT extended here - it's a per-peak array, not per-sample
+                elif seg_idx > 0:
+                    # Add artifacts between segments
+                    prev_end = clean_segments[seg_idx - 1][1]
+                    artifact_length = seg_start - prev_end
+                    if artifact_length > 0:
+                        all_beats_data[key]["hr"].extend([np.nan] * artifact_length)
+                        all_beats_data[key]["position"].extend([[np.nan, np.nan, np.nan]] * artifact_length)
+                        all_beats_data[key]["artifacts"].extend([True] * artifact_length)
+                        all_beats_data[key]["dipole_moments"].extend([[np.nan, np.nan, np.nan]] * artifact_length)
+                        all_beats_data[key]["components"].extend([np.nan] * artifact_length)
+                        # Note: outlier is NOT extended here - it's a per-peak array, not per-sample
+                
+                # Add segment data (adjust peak indices to global position)
+                all_beats_data[key]["peaks"].extend(seg_data_dict[key]["peaks"] + seg_start)
+                all_beats_data[key]["hr"].extend(seg_data_dict[key]["hr"])
+                all_beats_data[key]["outlier"].extend(seg_data_dict[key]["outlier"])
+                all_beats_data[key]["position"].extend(seg_data_dict[key]["position"])
+                all_beats_data[key]["artifacts"].extend([False] * (seg_end - seg_start))
+                all_beats_data[key]["dipole_moments"].extend(seg_data_dict[key]["dipole_moments"])
+                all_beats_data[key]["components"].extend(seg_data_dict[key]["components"])
+                
+                # Add artifacts after last segment
+                if seg_idx == len(clean_segments) - 1 and seg_end < len(m_hat):
+                    artifact_length = len(m_hat) - seg_end
+                    all_beats_data[key]["hr"].extend([np.nan] * artifact_length)
+                    all_beats_data[key]["position"].extend([[np.nan, np.nan, np.nan]] * artifact_length)
+                    all_beats_data[key]["artifacts"].extend([True] * artifact_length)
+                    all_beats_data[key]["dipole_moments"].extend([[np.nan, np.nan, np.nan]] * artifact_length)
+                    all_beats_data[key]["components"].extend([np.nan] * artifact_length)
+                    # Note: outlier is NOT extended here - it's a per-peak array, not per-sample
+        
+        # Convert lists to arrays
+        data_dict = {}
+        for key in ["fetal", "maternal"]:
+            data_dict[key] = {}
+            data_dict[key]["peaks"] = np.array(all_beats_data[key]["peaks"])
+            data_dict[key]["hr"] = np.array(all_beats_data[key]["hr"])
+            data_dict[key]["outlier"] = np.array(all_beats_data[key]["outlier"])
+            data_dict[key]["position"] = np.array(all_beats_data[key]["position"])
+            data_dict[key]["artifacts"] = np.array(all_beats_data[key]["artifacts"])
+            data_dict[key]["dipole_moments"] = np.array(all_beats_data[key]["dipole_moments"])
+            data_dict[key]["components"] = np.array(all_beats_data[key]["components"])
+        
+        # Log aggregated statistics
+        if log_dict is not None:
+            for key in ["fetal", "maternal"]:
+                valid_hr = data_dict[key]["hr"][~np.isnan(data_dict[key]["hr"])]
+                if len(valid_hr) > 0:
+                    logger.info(f"{key} - Peaks: {len(data_dict[key]['peaks'])} - Heart Rate: {valid_hr.mean():.2f} bpm")
+        
+        return data_dict
+    
+    # Original behavior for non-artifact-masked data
     data_dict = heartbeats.detect_heartbeats(
         m_hat,
         r_hat,
@@ -233,10 +366,6 @@ def _process_dipole_data(
         nlms=config["post_processing"].get("nlms", False),
         verbose=False,
     )
-    
-    if artifacts_mask is not None and "fetal" in data_dict and "maternal" in data_dict:
-        data_dict["fetal"]["artifacts_mask"] = artifacts_mask
-        data_dict["maternal"]["artifacts_mask"] = artifacts_mask
     
     return data_dict
 
