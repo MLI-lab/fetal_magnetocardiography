@@ -165,6 +165,8 @@ class LossConfig:
             - lag: Maximum lag for correlation
             - window: Window size for correlation
             - step: Step size for correlation computation
+        r_tv: Total variation regularization for positions
+            - weight: Weight for TV regularization
     """
     corr_m: Dict[str, Union[float, int]] = field(
         default_factory=lambda: {
@@ -172,6 +174,11 @@ class LossConfig:
             "lag": 50,
             "window": 5000,
             "step": 1
+        }
+    )
+    r_tv: Dict[str, float] = field(
+        default_factory=lambda: {
+            "weight": 0.0
         }
     )
 

@@ -10,6 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExec
 import threading
 import traceback
 import logging
+import os
 
 from matplotlib import pyplot as plt
 import numpy as np
@@ -20,7 +21,7 @@ import torch
 import neurokit2 as nk
 import dataclasses
 
-from fmcg.utils.plotting.report import report_hr, report_ica_components, report_m_hat_segments
+from fmcg.utils.plotting.report import report_hr, report_ica_components, report_m_hat_segments, report_r_hat_segments
 
 from ..utils import data, utils
 from ..utils.plotting import plot_utils
@@ -47,6 +48,14 @@ from ._pipeline_utils import (
 
 np.set_printoptions(legacy="1.21")
 logger = logging.getLogger(__name__)
+
+
+# Limit numpy/BLAS threading to prevent oversubscription in post-processing
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 
 class Pipeline:
@@ -1352,6 +1361,18 @@ class Pipeline:
                     self.data_dict, self.time_windowed, self.output_dir,
                     window_boundaries=window_boundaries
                 )
+            
+            if "r_hat" in self.save_reports:
+                # Extract window boundaries if available
+                window_boundaries = None
+                if hasattr(self, "overlapping_windows"):
+                    window_boundaries = [(w['start'], w['end']) for w in self.overlapping_windows]
+
+                report_r_hat_segments(
+                    self.data_dict, self.time_windowed, self.output_dir,
+                    window_boundaries=window_boundaries
+                )
+            
             if "ica" in self.save_reports:
                 report_ica_components(
                     self.data_dict, self.time_windowed, self.output_dir

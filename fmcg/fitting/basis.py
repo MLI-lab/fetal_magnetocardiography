@@ -222,6 +222,473 @@ class SigmoidBasis:
         return -torch.log((self.b1 / (data - self.b0)) - 1)
 
 
+class PiecewiseSigmoidBasis:
+    """
+    A piecewise sigmoid basis that divides the time dimension into segments,
+    each with its own bounded sigmoid transformation.
+
+    Attributes:
+        n_time (int, optional): Total number of time steps. If None, determined from data.
+        sampling_rate (float): Sampling rate in Hz.
+        segment_duration (float): Duration of each segment in seconds.
+        bnds (array-like): Bounds for each parameter, shape (n_dipoles, 3, 2) or flattened.
+        device (str): The device on which the computations will be performed.
+        n_segments (int): Number of segments (calculated dynamically if n_time is None).
+        segment_length (int): Length of each segment in samples.
+    """
+
+    def __init__(self, sampling_rate, segment_duration, bnds, n_time=None, device="cpu"):
+        """
+        Initialize the piecewise sigmoid basis.
+
+        Args:
+            sampling_rate (float): Sampling rate in Hz.
+            segment_duration (float): Duration of each segment in seconds.
+            bnds (array-like): Bounds for each parameter, shape (n_dipoles, 3, 2) or (n_params, 2).
+            n_time (int, optional): Total number of time steps. If None, determined from data.
+            device (str): Device for computation ("cpu" or "cuda").
+        """
+        self.device = device
+        self.n_time = n_time
+        self.sampling_rate = sampling_rate
+        self.segment_duration = segment_duration
+        
+        # Calculate segment length in samples
+        self.segment_length = int(sampling_rate * segment_duration)
+        
+        print(f"PiecewiseSigmoidBasis: sampling_rate={sampling_rate} Hz, segment_duration={segment_duration}s")
+        print(f"  -> segment_length={self.segment_length} samples")
+        
+        # Calculate number of segments if n_time is provided
+        self.n_segments = int(np.ceil(n_time / self.segment_length)) if n_time is not None else None
+        if self.n_segments is not None:
+            print(f"  -> n_time={n_time}, n_segments={self.n_segments}")
+        
+        # Prepare bounds - flatten if needed
+        if isinstance(bnds, list):
+            bnds = np.array(bnds)
+        
+        # Flatten bounds to (n_params, 2) format
+        # Expected input: (n_dipoles, 3, 2) -> flatten to (n_dipoles*3, 2)
+        original_shape = bnds.shape
+        if len(original_shape) == 3:
+            # Shape: (n_dipoles, 3, 2) -> (n_dipoles*3, 2)
+            bnds = bnds.reshape(-1, 2)
+        
+        # Store bounds: shape (n_params, 2)
+        self.n_params = bnds.shape[0]
+        bnds_ = torch.tensor(bnds.copy(), device=device, dtype=torch.float32)
+        
+        # Scale factors for sigmoid transformation
+        # For each parameter, compute b0 and b1
+        self.b1 = bnds_[:, 1] - bnds_[:, 0]  # Range: shape (n_params,)
+        self.b0 = bnds_[:, 0]  # Lower bound: shape (n_params,)
+    
+    def _get_n_segments(self, n_time):
+        """Calculate number of segments for given time length."""
+        return int(np.ceil(n_time / self.segment_length))
+
+    def forward(self, coefficients):
+        """
+        Forward pass: transform coefficients to piecewise bounded values.
+
+        Args:
+            coefficients (torch.Tensor): Coefficients of shape (n_segments * n_params,)
+                                         or (n_segments, n_params).
+
+        Returns:
+            torch.Tensor: Transformed values of shape (n_time, n_params).
+        """
+        # Ensure coefficients are 2D: (n_segments, n_params)
+        if coefficients.dim() == 1:
+            total_coeffs = len(coefficients)
+            if total_coeffs % self.n_params != 0:
+                raise ValueError(f"Coefficient length {total_coeffs} not divisible by n_params {self.n_params}")
+            n_segments = total_coeffs // self.n_params
+            coefficients = coefficients.reshape(n_segments, self.n_params)
+        else:
+            n_segments = coefficients.shape[0]
+        
+        # Calculate n_time from n_segments if not provided at initialization
+        n_time = n_segments * self.segment_length if self.n_time is None else self.n_time
+        
+        # Apply sigmoid transformation: x = b1 / (1 + exp(-coeff)) + b0
+        transformed = self.b1 / (1 + torch.exp(-coefficients)) + self.b0
+        # Shape: (n_segments, n_params)
+        
+        # Vectorized expansion: use repeat_interleave to avoid loop
+        # Each segment's values are repeated segment_length times
+        output = transformed.repeat_interleave(self.segment_length, dim=0)
+        
+        # Truncate to exact n_time if needed (last segment might be shorter)
+        if output.shape[0] > n_time:
+            output = output[:n_time, :]
+        
+        return output
+
+    def fit_coefficients(self, data):
+        """
+        Fit coefficients from data by averaging within each segment.
+
+        Args:
+            data (torch.Tensor): Data of shape (n_time, n_params) or (1, n_params) for constant init.
+
+        Returns:
+            torch.Tensor: Fitted coefficients of shape (n_segments * n_params,).
+        """
+        if data.dim() == 1:
+            data = data.unsqueeze(1)
+        
+        # Get n_time from data
+        n_time = data.shape[0]
+        
+        # Special case: if data is constant (n_time=1), use n_time from initialization or raise error
+        if n_time == 1:
+            if self.n_time is None:
+                raise ValueError(
+                    "Cannot fit coefficients from single-sample data when n_time is not specified. "
+                    "Either provide full time-series data or set n_time during initialization."
+                )
+            n_time = self.n_time
+            # Expand constant value to all segments
+            n_segments = self._get_n_segments(n_time)
+            constant_value = data[0]  # Shape: (n_params,)
+            
+            # Compute inverse sigmoid for the constant value
+            coefficients = -torch.log((self.b1 / (constant_value - self.b0)) - 1)
+            
+            # Repeat for all segments: shape (n_segments, n_params)
+            coefficients = coefficients.unsqueeze(0).repeat(n_segments, 1)
+            
+            return coefficients.flatten()
+        
+        # Normal case: fit from time series data
+        n_segments = self._get_n_segments(n_time)
+        
+        # Vectorized segment averaging
+        # Pad or truncate data to match expected total length
+        total_needed = n_segments * self.segment_length
+        if n_time < total_needed:
+            # Pad with last value
+            padding = total_needed - n_time
+            data = torch.cat([data, data[-1:].repeat(padding, 1)], dim=0)
+        elif n_time > total_needed:
+            # Use only up to the last complete segment
+            data = data[:total_needed]
+        
+        # Reshape to (n_segments, segment_length, n_params) and average over segment_length
+        data_reshaped = data.reshape(n_segments, self.segment_length, self.n_params)
+        segment_means = data_reshaped.mean(dim=1)  # (n_segments, n_params)
+        
+        # Inverse sigmoid transformation: coeff = -log((b1 / (x - b0)) - 1)
+        coefficients = -torch.log((self.b1 / (segment_means - self.b0)) - 1)
+        
+        return coefficients.flatten()
+
+
+class BoundedBSplineBasis:
+    """
+    B-spline basis with sigmoid bounds applied in output domain.
+    Provides smooth time-varying parameters with configurable smoothness via degree.
+    
+    Attributes:
+        n_time (int, optional): Total number of time steps. If None, determined from data.
+        sampling_rate (float): Sampling rate in Hz.
+        segment_duration (float): Duration of each segment in seconds (determines n_knots).
+        bnds (array-like): Bounds for each parameter, shape (n_dipoles, 3, 2) or flattened.
+        degree (int): B-spline degree (1=linear, 2=quadratic, 3=cubic).
+        device (str): The device on which the computations will be performed.
+        n_knots (int): Number of knots for B-spline.
+    """
+    
+    def __init__(self, sampling_rate, segment_duration, bnds, n_time=None, degree=3, device="cpu"):
+        """
+        Initialize the bounded B-spline basis.
+        
+        Args:
+            sampling_rate (float): Sampling rate in Hz.
+            segment_duration (float): Duration of each segment in seconds.
+            bnds (array-like): Bounds for each parameter, shape (n_dipoles, 3, 2) or (n_params, 2).
+            n_time (int, optional): Total number of time steps. If None, determined from data.
+            degree (int): B-spline degree (1=linear, 2=quadratic, 3=cubic). Default=3.
+            device (str): Device for computation ("cpu" or "cuda").
+        """
+        self.device = device
+        self.n_time = n_time
+        self.sampling_rate = sampling_rate
+        self.segment_duration = segment_duration
+        self.degree = degree
+        
+        # Calculate segment length and n_knots
+        segment_length = int(sampling_rate * segment_duration)
+        self.n_knots = int(np.ceil(n_time / segment_length)) if n_time is not None else None
+        
+        print(f"BoundedBSplineBasis: sampling_rate={sampling_rate} Hz, segment_duration={segment_duration}s, degree={degree}")
+        print(f"  -> segment_length={segment_length} samples")
+        if self.n_knots is not None:
+            print(f"  -> n_time={n_time}, n_knots={self.n_knots}")
+        
+        # Prepare bounds - flatten if needed
+        if isinstance(bnds, list):
+            bnds = np.array(bnds)
+        
+        # Flatten bounds to (n_params, 2) format
+        original_shape = bnds.shape
+        if len(original_shape) == 3:
+            bnds = bnds.reshape(-1, 2)
+        
+        # Store bounds: shape (n_params, 2)
+        self.n_params = bnds.shape[0]
+        bnds_ = torch.tensor(bnds.copy(), device=device, dtype=torch.float32)
+        
+        # Scale factors for sigmoid transformation (applied in output domain)
+        self.b1 = bnds_[:, 1] - bnds_[:, 0]  # Range
+        self.b0 = bnds_[:, 0]  # Lower bound
+        
+        # Initialize B-spline basis if n_time is provided
+        if n_time is not None:
+            self._build_basis(n_time)
+        else:
+            self.bspline = None
+    
+    def _build_basis(self, n_time):
+        """Build the B-spline basis matrix."""
+        n_knots = int(np.ceil(n_time / (self.sampling_rate * self.segment_duration)))
+        self.n_knots = n_knots
+        self.bspline = BSpline(n_knots=n_knots, n_time=n_time, degree=self.degree, 
+                               clamped=True, device=self.device)
+    
+    def forward(self, coefficients):
+        """
+        Forward pass: B-spline coefficients → smooth curve → bounded values.
+        
+        Args:
+            coefficients (torch.Tensor): Coefficients of shape (n_knots * n_params,)
+                                         or (n_knots, n_params).
+        
+        Returns:
+            torch.Tensor: Bounded values of shape (n_time, n_params).
+        """
+        if self.bspline is None:
+            raise ValueError("Basis not initialized. Provide n_time during __init__ or call forward with valid data.")
+        
+        # Ensure coefficients are 2D: (n_knots, n_params)
+        if coefficients.dim() == 1:
+            total_coeffs = len(coefficients)
+            if total_coeffs % self.n_params != 0:
+                raise ValueError(f"Coefficient length {total_coeffs} not divisible by n_params {self.n_params}")
+            coefficients = coefficients.reshape(-1, self.n_params)
+        
+        # Apply B-spline basis to get unbounded values in output domain
+        unbounded = self.bspline.forward(coefficients)  # (n_time, n_params)
+        
+        # Apply sigmoid bounds in output domain
+        output = self.b1 / (1 + torch.exp(-unbounded)) + self.b0
+        
+        return output
+    
+    def fit_coefficients(self, data):
+        """
+        Fit coefficients from data by inverse sigmoid + spline fitting.
+        
+        Args:
+            data (torch.Tensor): Data of shape (n_time, n_params) or (1, n_params) for constant init.
+        
+        Returns:
+            torch.Tensor: Fitted coefficients of shape (n_knots * n_params,).
+        """
+        if data.dim() == 1:
+            data = data.unsqueeze(1)
+        
+        n_time = data.shape[0]
+        
+        # Build basis if not already done
+        if self.bspline is None:
+            if self.n_time is None and n_time == 1:
+                raise ValueError(
+                    "Cannot fit coefficients from single-sample data when n_time is not specified. "
+                    "Either provide full time-series data or set n_time during initialization."
+                )
+            self._build_basis(self.n_time if self.n_time is not None else n_time)
+        
+        # Special case: constant initialization
+        if n_time == 1:
+            constant_value = data[0]  # Shape: (n_params,)
+            # Inverse sigmoid
+            unbounded = -torch.log((self.b1 / (constant_value - self.b0)) - 1)
+            # Expand to all time points, then fit
+            unbounded_expanded = unbounded.unsqueeze(0).repeat(self.n_time, 1)
+            coefficients = self.bspline.fit_coefficients(unbounded_expanded)
+            return coefficients.flatten()
+        
+        # Normal case: inverse sigmoid then fit spline
+        unbounded = -torch.log((self.b1 / (data - self.b0)) - 1)
+        coefficients = self.bspline.fit_coefficients(unbounded)
+        
+        return coefficients.flatten()
+
+
+class BoundedLowFrequencyBasis:
+    """
+    DCT-based low-frequency basis with sigmoid bounds applied in output domain.
+    Enforces smooth, low-frequency behavior with explicit frequency control.
+    
+    Attributes:
+        n_time (int, optional): Total number of time steps. If None, determined from data.
+        sampling_rate (float): Sampling rate in Hz.
+        segment_duration (float): Duration of each segment in seconds (determines max frequency if not provided).
+        bnds (array-like): Bounds for each parameter, shape (n_dipoles, 3, 2) or flattened.
+        max_frequency (float, optional): Maximum frequency in Hz.
+        device (str): The device on which the computations will be performed.
+        n_components (int): Number of DCT components.
+    """
+    
+    def __init__(self, sampling_rate, segment_duration, bnds, n_time=None, max_frequency=None, device="cpu"):
+        """
+        Initialize the bounded low-frequency basis.
+        
+        Args:
+            sampling_rate (float): Sampling rate in Hz.
+            segment_duration (float): Duration of each segment in seconds.
+            bnds (array-like): Bounds for each parameter, shape (n_dipoles, 3, 2) or (n_params, 2).
+            n_time (int, optional): Total number of time steps. If None, determined from data.
+            max_frequency (float, optional): Maximum frequency in Hz. If None, calculated as 1/segment_duration.
+            device (str): Device for computation ("cpu" or "cuda").
+        """
+        self.device = device
+        self.n_time = n_time
+        self.sampling_rate = sampling_rate
+        self.segment_duration = segment_duration
+        
+        # Calculate max frequency
+        if max_frequency is None:
+            self.max_frequency = 1.0 / segment_duration
+        else:
+            self.max_frequency = max_frequency
+        
+        # Calculate number of DCT components
+        if n_time is not None:
+            self.n_components = int(self.max_frequency * n_time / sampling_rate)
+            self.n_components = max(1, min(self.n_components, n_time))  # Clamp to valid range
+        else:
+            self.n_components = None
+        
+        print(f"BoundedLowFrequencyBasis: sampling_rate={sampling_rate} Hz, max_frequency={self.max_frequency:.4f} Hz")
+        if self.n_components is not None:
+            print(f"  -> n_time={n_time}, n_components={self.n_components}")
+        
+        # Prepare bounds - flatten if needed
+        if isinstance(bnds, list):
+            bnds = np.array(bnds)
+        
+        # Flatten bounds to (n_params, 2) format
+        original_shape = bnds.shape
+        if len(original_shape) == 3:
+            bnds = bnds.reshape(-1, 2)
+        
+        # Store bounds: shape (n_params, 2)
+        self.n_params = bnds.shape[0]
+        bnds_ = torch.tensor(bnds.copy(), device=device, dtype=torch.float32)
+        
+        # Scale factors for sigmoid transformation (applied in output domain)
+        self.b1 = bnds_[:, 1] - bnds_[:, 0]  # Range
+        self.b0 = bnds_[:, 0]  # Lower bound
+        
+        # Initialize DCT basis if n_time is provided
+        if n_time is not None:
+            self._build_basis(n_time)
+        else:
+            self.dct_basis = None
+    
+    def _build_basis(self, n_time):
+        """Build the DCT basis matrix."""
+        n_components = int(self.max_frequency * n_time / self.sampling_rate)
+        n_components = max(1, min(n_components, n_time))
+        self.n_components = n_components
+        
+        # Build DCT-II basis matrix: basis[t, k] = sqrt(2/N) * cos(π * k * (t + 0.5) / N)
+        t = torch.arange(n_time, device=self.device, dtype=torch.float32)
+        k = torch.arange(n_components, device=self.device, dtype=torch.float32)
+        
+        # DCT-II formula
+        basis = torch.cos(torch.pi * k.unsqueeze(0) * (t.unsqueeze(1) + 0.5) / n_time)
+        
+        # Normalization
+        basis[:, 0] *= np.sqrt(1.0 / n_time)
+        basis[:, 1:] *= np.sqrt(2.0 / n_time)
+        
+        self.dct_basis = basis  # Shape: (n_time, n_components)
+    
+    def forward(self, coefficients):
+        """
+        Forward pass: DCT coefficients → low-frequency curve → bounded values.
+        
+        Args:
+            coefficients (torch.Tensor): Coefficients of shape (n_components * n_params,)
+                                         or (n_components, n_params).
+        
+        Returns:
+            torch.Tensor: Bounded values of shape (n_time, n_params).
+        """
+        if self.dct_basis is None:
+            raise ValueError("Basis not initialized. Provide n_time during __init__ or call forward with valid data.")
+        
+        # Ensure coefficients are 2D: (n_components, n_params)
+        if coefficients.dim() == 1:
+            total_coeffs = len(coefficients)
+            if total_coeffs % self.n_params != 0:
+                raise ValueError(f"Coefficient length {total_coeffs} not divisible by n_params {self.n_params}")
+            coefficients = coefficients.reshape(-1, self.n_params)
+        
+        # Apply DCT basis to get unbounded values in output domain
+        unbounded = torch.matmul(self.dct_basis, coefficients)  # (n_time, n_params)
+        
+        # Apply sigmoid bounds in output domain
+        output = self.b1 / (1 + torch.exp(-unbounded)) + self.b0
+        
+        return output
+    
+    def fit_coefficients(self, data):
+        """
+        Fit coefficients from data by inverse sigmoid + DCT fitting.
+        
+        Args:
+            data (torch.Tensor): Data of shape (n_time, n_params) or (1, n_params) for constant init.
+        
+        Returns:
+            torch.Tensor: Fitted coefficients of shape (n_components * n_params,).
+        """
+        if data.dim() == 1:
+            data = data.unsqueeze(1)
+        
+        n_time = data.shape[0]
+        
+        # Build basis if not already done
+        if self.dct_basis is None:
+            if self.n_time is None and n_time == 1:
+                raise ValueError(
+                    "Cannot fit coefficients from single-sample data when n_time is not specified. "
+                    "Either provide full time-series data or set n_time during initialization."
+                )
+            self._build_basis(self.n_time if self.n_time is not None else n_time)
+        
+        # Special case: constant initialization
+        if n_time == 1:
+            constant_value = data[0]  # Shape: (n_params,)
+            # Inverse sigmoid
+            unbounded = -torch.log((self.b1 / (constant_value - self.b0)) - 1)
+            # Expand to all time points, then fit
+            unbounded_expanded = unbounded.unsqueeze(0).repeat(self.n_time, 1)
+            coefficients = torch.linalg.lstsq(self.dct_basis, unbounded_expanded).solution
+            return coefficients.flatten()
+        
+        # Normal case: inverse sigmoid then fit DCT
+        unbounded = -torch.log((self.b1 / (data - self.b0)) - 1)
+        coefficients = torch.linalg.lstsq(self.dct_basis, unbounded).solution
+        
+        return coefficients.flatten()
+
+
 class ExponentialBasis:
     """
     A class that implements an exponential basis transformation.
