@@ -40,18 +40,21 @@ class CosineSchedulerWithWarmup:
             return 0.0
 
 
-def bilateral_tv(x, sigma_d, sigma_r, n=1, weight=1.0, p=1, dim=0):
+def bilateral_tv(x, sigma_d, sigma_r, n=1, weight=1.0, p=1, dim=0, normalize=True):
     """
     Computes the bilateral total variation for a 1D signal x at a given order.
 
     Args:
-        x (torch.Tensor): Tensor of shape (N,)
+        x (torch.Tensor): Tensor of shape (N,) or (T, num_dipoles, C)
         sigma_d (float): Spatial standard deviation.
         sigma_r (float): Intensity standard deviation.
         n (int): Order of the finite difference.
         weight (float|torch.Tensor): Weight for each time series in x.
         p (int): Norm order.
-        dim (int): Dimension along which to compute the TV.
+        dim (int): Dimension along which to compute the TV (default 0 = time).
+        normalize (bool): If True, normalize by time^(1/p) and number of components.
+                         This makes the regularization strength independent of signal length
+                         and number of dipoles.
     """
     if isinstance(weight, (int, float, list)):
         weight = torch.tensor(weight).to(x.device)
@@ -69,6 +72,13 @@ def bilateral_tv(x, sigma_d, sigma_r, n=1, weight=1.0, p=1, dim=0):
     btv = weight * torch.sum(
         spatial_weight * intensity_weight * diff.abs() ** p, dim=dim
     ) ** (1 / p)
+
+    if normalize:
+        # Normalize accounting for p-norm scaling
+        num_diffs = diff.shape[dim]  # Number of temporal differences
+        num_components = diff.numel() // num_diffs  # All non-time elements
+        btv = btv / ((num_diffs ** (1.0 / p)) * num_components)
+
     return btv.sum()
 
 
@@ -327,7 +337,7 @@ def mutual_information_penalty(x, weight=1.0, sigma=0.01, num_bins=256, normaliz
     return weight * mi(a, b)
 
 
-def tv(x, n=1, p=2, weight=1.0, dim=0):
+def tv(x, n=1, p=2, weight=1.0, dim=0, normalize=True):
     """
     Computes the total variation of a signal x at a given order.
 
@@ -337,6 +347,9 @@ def tv(x, n=1, p=2, weight=1.0, dim=0):
         p (int): Norm order.
         weight (float|torch.Tensor): Weight for each time series in x.
         dim (int): Dimension along which to compute the TV.
+        normalize (bool): If True, normalize by time^(1/p) and number of components.
+                         This makes the regularization strength independent of signal length
+                         and number of parameters (dipoles/spatial dimensions).
     """
 
     if isinstance(weight, (int, float, list)):
@@ -349,6 +362,12 @@ def tv(x, n=1, p=2, weight=1.0, dim=0):
     # tv = weight *torch.nn.HuberLoss(reduction='none', delta=)(diff, torch.zeros_like(diff)).sum(dim=dim)/0.00001
     # tv = weight * torch.linalg.vector_norm(diff[diff.abs() < 0.0001], dim=dim, ord=p)
     tv = weight * torch.linalg.vector_norm(diff, dim=dim, ord=p)
+
+    if normalize:
+        # Normalize accounting for p-norm scaling
+        num_diffs = diff.shape[dim]  # Number of temporal differences
+        num_components = diff.numel() // num_diffs  # All non-time elements
+        tv = tv / ((num_diffs ** (1.0 / p)) * num_components)
 
     return tv.sum()
 
@@ -379,7 +398,7 @@ def huber(x, y, delta=1.0):
     )
 
 
-def norm(x, p=2, weight=1.0, dim=(1)):
+def norm(x, p=2, weight=1.0, dim=(1), normalize=True):
     """
     Computes the p-norm of a signal x.
 
@@ -388,13 +407,26 @@ def norm(x, p=2, weight=1.0, dim=(1)):
         p (int): Norm order
         weight (float|torch.Tensor): Weight for each time series in x.
         dim (int): Dimension along which to compute the norm.
+        normalize (bool): If True, normalize by T^(1/p) and number of components.
+                         This makes the regularization strength independent of signal length
+                         and number of parameters.
     """
     if isinstance(weight, (int, float, list)):
         weight = torch.tensor(weight).to(x.device)
     if weight.ndim < x.ndim - 1:
         weight = weight.unsqueeze(-1)
 
-    return (weight * torch.linalg.vector_norm(x, ord=p, dim=dim)).sum()
+    result = weight * torch.linalg.vector_norm(x, ord=p, dim=dim)
+
+    if normalize:
+        # Normalize accounting for p-norm scaling
+        # Assume first dimension is time
+        time_dim = 0
+        T = x.shape[time_dim]
+        num_components = x.numel() // T  # All non-time elements
+        result = result / ((T ** (1.0 / p)) * num_components)
+
+    return result.sum()
 
 
 def lncosh(x, y, lamb=3.0):
