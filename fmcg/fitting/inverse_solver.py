@@ -85,6 +85,42 @@ class InverseSolver:
                 elif basis[k]["basis"] == "wavelet":
                     assert "n_time" in basis[k]
                     self.basis[k] = WaveletBasis(n_time=basis[k].get("n_time", None), wavelet=basis[k].get("wavelet", "db4"), device=self.device, level=basis[k].get("level", None))
+                elif basis[k]["basis"] == "sigmoid_piecewise_constant":
+                    assert "bnds" in basis[k]
+                    assert "sampling_rate" in basis[k]
+                    assert "segment_duration" in basis[k]
+                    self.basis[k] = PiecewiseSigmoidBasis(
+                                        sampling_rate=basis[k]["sampling_rate"],
+                                        segment_duration=basis[k]["segment_duration"],
+                                        bnds=basis[k]["bnds"],
+                                        n_time=basis[k].get("n_time", None),  # Optional
+                                        device=self.device
+                                    )
+                elif basis[k]["basis"] == "sigmoid_dct":
+                    assert "bnds" in basis[k]
+                    assert "sampling_rate" in basis[k]
+                    assert "segment_duration" in basis[k]
+                    self.basis[k] = BoundedLowFrequencyBasis(
+                                        sampling_rate=basis[k]["sampling_rate"],
+                                        segment_duration=basis[k]["segment_duration"],
+                                        bnds=basis[k]["bnds"],
+                                        n_time=basis[k].get("n_time", None),  # Optional
+                                        max_frequency=basis[k].get("max_frequency", None),
+                                        device=self.device
+                                    )
+                elif basis[k]["basis"] == "sigmoid_bspline":
+                    assert "bnds" in basis[k]
+                    assert "sampling_rate" in basis[k]
+                    assert "segment_duration" in basis[k]
+                    self.basis[k] = BoundedBSplineBasis(
+                        sampling_rate=basis[k]["sampling_rate"],
+                        segment_duration=basis[k]["segment_duration"],
+                        bnds=basis[k]["bnds"],
+                        n_time=basis[k].get("n_time", None),
+                        degree=basis[k].get("degree", 3),
+                        device=self.device
+                    )
+
 
         # initialize axis masking for removing non-recorded field components
         if axis_mask is None:
@@ -523,6 +559,9 @@ class InverseSolver:
         #     loss_dict["TV_r"] = tv(r_hat, **self.loss_params["TV_r"])
         # if "TV_m" in self.loss_params:
         #     loss_dict["TV_m"] = tv(m_hat, **self.loss_params["TV_m"])
+        if "r_tv" in self.loss_params:
+            # Simple TV regularization for r (applies to all dipoles)
+            loss_dict["r_tv"] = tv(r_hat, **self.loss_params["r_tv"])
         if "TV_r" in self.loss_params:
             loss_dict["TV_r_f"] = tv(r_hat[:,0], weight=self.loss_params["TV_r"]['weight'][0])
             loss_dict["TV_r_m"] = tv(r_hat[:,1], weight=self.loss_params["TV_r"]['weight'][1])
@@ -918,6 +957,10 @@ class InverseSolver:
         if any(k in config for k in ["corr_r_weight"]):
             loss_args["corr_r"] = dict(
             weight=config.get("corr_r_weight", 0),
+            )
+        if any(k in config for k in ["r_tv_weight"]):
+            loss_args["r_tv"] = dict(
+            weight=config.get("r_tv_weight", 0),
             )
         m_hat, r_hat = self.solve(
             field_true,

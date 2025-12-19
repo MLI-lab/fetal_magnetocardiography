@@ -18,24 +18,28 @@ logger = logging.getLogger(__name__)
 def _create_basis_dict(config, N):
     """Create basis dictionary for solver configuration."""
     basis_dict = {}
-    # Ensure r_basis is a dict and add n_time
-    if "r_basis" in config["solver"]:
-        r_basis = config["solver"]["r_basis"]
-        if isinstance(r_basis, dict):
-            basis_dict["r"] = dict(r_basis)  # shallow copy
+    
+    # Handle r basis - support both "r" and "r_basis" keys
+    r_config = config["solver"].get("r") or config["solver"].get("r_basis")
+    if r_config is not None:
+        if isinstance(r_config, dict):
+            basis_dict["r"] = dict(r_config)  # shallow copy
             basis_dict["r"]["n_time"] = N
         else:
-            basis_dict["r"] = {"basis": r_basis, "n_time": N}
+            basis_dict["r"] = {"basis": r_config, "n_time": N}
+        # Add r_bnds if specified separately (legacy support)
         if "r_bnds" in config["solver"]:
             basis_dict["r"]["bnds"] = config["solver"]["r_bnds"]
-    # Ensure m_basis is a dict and add n_time
-    if "m_basis" in config["solver"]:
-        m_basis = config["solver"]["m_basis"]
-        if isinstance(m_basis, dict):
-            basis_dict["m"] = dict(m_basis)  # shallow copy
+    
+    # Handle m basis - support both "m" and "m_basis" keys
+    m_config = config["solver"].get("m") or config["solver"].get("m_basis")
+    if m_config is not None:
+        if isinstance(m_config, dict):
+            basis_dict["m"] = dict(m_config)  # shallow copy
             basis_dict["m"]["n_time"] = N
         else:
-            basis_dict["m"] = {"basis": m_basis, "n_time": N}
+            basis_dict["m"] = {"basis": m_config, "n_time": N}
+    
     return basis_dict
 
 def _create_inverse_solver(config, N, axis_mask, W):
