@@ -606,15 +606,10 @@ class Pipeline:
         )
 
     def _solve(self):
-        """Main solver entry point - routes to appropriate processing mode."""
-        enable_overlap = self.config["preprocessing"].get("enable_overlapping_windows", False)
-        use_segments = hasattr(self, "processing_segments")
-
-        if enable_overlap:
-            self._solve_with_overlapping_windows()
-            return
-        if use_segments:
+        """Solve the inverse problem using the initialized solver and the preprocessed data."""
+        if hasattr(self, "processing_segments"):
             # For segmented processing, solve each segment individually
+            # Step header logging is now handled in _process_single_segment
             logger.info(f"Processing {len(self.processing_segments)} segments")
 
             # Check if parallel processing is enabled
@@ -766,7 +761,7 @@ class Pipeline:
                 )
 
             return
-        
+
         # Original behavior for non-segmented processing
         self._log_step_header("Solving")
 
@@ -802,287 +797,6 @@ class Pipeline:
         if self.config["post_processing"].get("wavelet_denoise", False):
             logger.info("\nWavelet Denoising")
         self.m_hat = _apply_wavelet_denoising(self.m_hat, self.config)
-        
-
-    def _process_windows_sequential(self, windows):
-        results = []
-        for i, window in enumerate(windows):
-            logger.info(f"Processing window {i+1}/{len(windows)}")
-            start = window['start']
-            end = window['end']
-            window_data = self.field_maps_windowed[start:end]
-            window_time = self.time_windowed[start:end]
-            mdl, initial_parameters, field_true = self._create_solver_components(window_data, device=self.device)
-            m_hat, r_hat = _solve_segment(mdl, field_true, initial_parameters, self.config, segment_idx=window.get('segment_idx', 0))
-            m_hat = _apply_wavelet_denoising(m_hat, self.config)
-            results.append({
-                'start': start,
-                'end': end,
-                'm_hat': m_hat,
-                'r_hat': r_hat,
-                'segment_idx': window.get('segment_idx', 0)
-            })
-        return results
-
-    def _process_windows_parallel(self, windows, max_workers):
-        use_cuda = self.device.startswith("cuda") and torch.cuda.is_available()
-        max_workers = min(len(windows), max_workers)
-        if use_cuda:
-            logger.info(f"Processing {len(windows)} windows with {max_workers} threads (CUDA)")
-            return self._process_windows_threaded(windows, max_workers)
-        else:
-            logger.info(f"Processing {len(windows)} windows with {max_workers} processes (CPU)")
-            return self._process_windows_multiprocess(windows, max_workers)
-
-    def _solve_with_overlapping_windows(self):
-        """Process signal using overlapping windows with averaging reconstruction."""
-        from ._pipeline_utils import _create_overlapping_windows, _windows_from_segments
-
-        config = self.config["preprocessing"]
-        window_length_sec = config.get("window_length", 60.0)
-        window_overlap = config.get("window_overlap", 0.5)
-        min_window_ratio = config.get("min_window_size_ratio", 0.5)
-
-        # Convert to samples
-        window_length_samples = int(window_length_sec * self.fs_)
-        if window_overlap < 1.0:
-            overlap_samples = int(window_overlap * window_length_samples)
-        else:
-            overlap_samples = int(window_overlap * self.fs_)
-        min_window_samples = int(min_window_ratio * window_length_samples)
-
-        if hasattr(self, "processing_segments"):
-            logger.info(
-                f"Generating overlapping windows within {len(self.processing_segments)} clean segments (window={window_length_sec}s, overlap={overlap_samples/self.fs_:.1f}s)"
-            )
-            windows = _windows_from_segments(
-                self.processing_segments,
-                window_length_samples,
-                overlap_samples,
-                min_window_samples,
-            )
-            self.artifact_gaps = self._compute_artifact_gaps()
-        else:
-            signal_length = len(self.field_maps_windowed)
-            logger.info(
-                f"Generating overlapping windows on full signal (length={signal_length/self.fs_:.1f}s, window={window_length_sec}s, overlap={overlap_samples/self.fs_:.1f}s)"
-            )
-            simple_windows = _create_overlapping_windows(
-                signal_length, window_length_samples, overlap_samples, min_window_samples
-            )
-            windows = [
-                {
-                    "start": start,
-                    "end": end,
-                    "segment_idx": 0,
-                    "local_start": start,
-                    "local_end": end,
-                }
-                for start, end in simple_windows
-            ]
-            self.artifact_gaps = []
-
-        if not windows:
-            logger.error("No valid windows generated!")
-            return
-
-        logger.info(f"Generated {len(windows)} overlapping windows")
-        self._log_step_header("Solver Initialization & Solving (Overlapping Windows)")
-        self.overlapping_windows = windows
-
-        use_parallel = self.config["solver"].get("parallel_processing", False)
-        max_workers = self.config["solver"].get("max_workers", 4)
-
-        if use_parallel and len(windows) > 1:
-            self.window_results = self._process_windows_parallel(windows, max_workers)
-        else:
-            self.window_results = self._process_windows_sequential(windows)
-
-        # Merge results into continuous arrays
-        self._merge_window_results()
-
-    def _process_windows_threaded(self, windows, max_workers):
-        results = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for window in windows:
-                future = executor.submit(self._solve_single_window, window)
-                futures.append((future, window))
-            for future, window in futures:
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as exc:
-                    logger.error(f"Window {window} failed: {exc}")
-        results.sort(key=lambda x: x['start'])
-        return results
-
-    def _process_windows_multiprocess(self, windows, max_workers):
-        from ._pipeline_utils import _process_window_worker
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        
-        # Prepare global parameters for slicing
-        global_params_np = {}
-        if hasattr(self, "initial_parameters"):
-            for k, v in self.initial_parameters.items():
-                if v is not None:
-                    global_params_np[k] = v.cpu().numpy() if hasattr(v, "cpu") else v
-                else:
-                    global_params_np[k] = None
-        
-        field_true_np = None
-        if hasattr(self, "field_true"):
-            field_true_np = self.field_true.cpu().numpy() if hasattr(self.field_true, "cpu") else self.field_true
-
-        window_args = []
-        for window in windows:
-            start = window['start']
-            end = window['end']
-            window_data = self.field_maps_windowed[start:end]
-            window_time = self.time_windowed[start:end]
-            
-            # Slice parameters
-            params_slice = {}
-            for k, v in global_params_np.items():
-                if v is not None and hasattr(v, "__getitem__") and len(v) >= end:
-                     params_slice[k] = v[start:end]
-                else:
-                     params_slice[k] = v
-            
-            field_slice = field_true_np[start:end] if field_true_np is not None else None
-
-            args = (
-                window_data,
-                window_time,
-                window['start'],
-                window['end'],
-                window.get('segment_idx', 0),
-                self.config,
-                self.axis_mask,
-                self.W,
-                self.fs_,
-                params_slice,
-                field_slice
-            )
-            window_args.append(args)
-        results = []
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            future_to_window = {
-                executor.submit(_process_window_worker, args): args[2]
-                for args in window_args
-            }
-            for future in as_completed(future_to_window):
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as exc:
-                    logger.error(f"Window processing failed: {exc}")
-        results.sort(key=lambda x: x['start'])
-        return results
-
-    def _solve_single_window(self, window):
-        start = window['start']
-        end = window['end']
-        window_data = self.field_maps_windowed[start:end]
-        window_time = self.time_windowed[start:end]
-        
-        # Slice global parameters
-        params_slice = {}
-        if hasattr(self, "initial_parameters"):
-            for k, v in self.initial_parameters.items():
-                if v is not None and hasattr(v, "__getitem__") and len(v) >= end:
-                    params_slice[k] = v[start:end]
-                else:
-                    params_slice[k] = v
-        
-        field_slice = self.field_true[start:end] if hasattr(self, "field_true") else None
-        
-        # Create solver for this window
-        mdl = _create_inverse_solver(self.config, len(window_data), self.axis_mask, self.W)
-        
-        # Solve using sliced parameters
-        # If field_slice is None (shouldn't happen if initialized), fallback to window_data
-        if field_slice is None:
-             # Fallback initialization if needed
-             r_init = np.repeat(self.config["solver"]["r_init"], len(window_data), axis=0)
-             params_slice, field_slice = _initialize_solver_parameters(mdl, r_init, window_data, self.config)
-
-        m_hat, r_hat = _solve_segment(mdl, field_slice, params_slice, self.config, segment_idx=window.get('segment_idx', 0))
-        m_hat = _apply_wavelet_denoising(m_hat, self.config)
-        return {
-            'start': start,
-            'end': end,
-            'm_hat': m_hat,
-            'r_hat': r_hat,
-            'segment_idx': window.get('segment_idx', 0)
-        }
-
-    def _merge_window_results(self):
-        from ._pipeline_utils import _merge_overlapping_windows
-        logger.info("Merging overlapping window results")
-        total_length = len(self.field_maps_windowed)
-        num_dipoles = self.config["solver"]["num_dipoles"]
-        merge_method = self.config["preprocessing"].get("overlap_merge_method", "average")
-        m_hat, r_hat, overlap_counts = _merge_overlapping_windows(
-            self.window_results,
-            total_length,
-            num_dipoles,
-            merge_method
-        )
-        
-        # Create artifact mask for visualization
-        # Mark regions as artifacts if they are: (1) in artifact_gaps, or (2) not covered by any window
-        self.artifacts_mask = np.zeros(total_length, dtype=bool)
-        
-        if hasattr(self, "artifact_gaps") and self.artifact_gaps:
-            for gap_start, gap_end in self.artifact_gaps:
-                if gap_end > gap_start:
-                    self.artifacts_mask[gap_start:gap_end] = True
-        
-        # Also mark uncovered regions as artifacts
-        uncovered_mask = (overlap_counts == 0)
-        self.artifacts_mask = self.artifacts_mask | uncovered_mask
-        
-        # Keep NaN values in artifact regions for proper visualization
-        # The plotting and post-processing code should handle NaNs appropriately
-        
-        self.m_hat = m_hat
-        self.r_hat = r_hat
-        self.overlap_counts = overlap_counts
-        valid_samples = np.sum(overlap_counts > 0)
-        avg_overlap = np.mean(overlap_counts[overlap_counts > 0]) if np.any(overlap_counts > 0) else 0
-        max_overlap = np.max(overlap_counts) if np.any(overlap_counts > 0) else 0
-        logger.info(
-            f"Merged {len(self.window_results)} windows: "
-            f"{valid_samples}/{total_length} samples covered, "
-            f"avg overlap={avg_overlap:.1f}x, max overlap={max_overlap}x"
-        )
-        
-        # Log artifact statistics
-        artifact_samples = np.sum(self.artifacts_mask)
-        if artifact_samples > 0:
-            logger.info(
-                f"Artifact regions: {artifact_samples}/{total_length} samples "
-                f"({artifact_samples/self.fs_:.2f}s, {100*artifact_samples/total_length:.1f}%)"
-            )
-
-    def _compute_artifact_gaps(self):
-        if not hasattr(self, "processing_segments"):
-            return []
-        gaps = []
-        total_length = len(self.field_maps_windowed)
-        if self.processing_segments[0][0] > 0:
-            gaps.append((0, self.processing_segments[0][0]))
-        for i in range(len(self.processing_segments) - 1):
-            gap_start = self.processing_segments[i][1]
-            gap_end = self.processing_segments[i+1][0]
-            if gap_end > gap_start:
-                gaps.append((gap_start, gap_end))
-        if self.processing_segments[-1][1] < total_length:
-            gaps.append((self.processing_segments[-1][1], total_length))
-        return gaps
-            
-
  
     def _combine_segment_results(self, segment_data_dict, i, all_beats_data):
         """Helper method to collect beats data from all segments and add artifacts in between."""
@@ -1352,25 +1066,13 @@ class Pipeline:
                 )
 
             if "m_hat" in self.save_reports:
-                # Extract window boundaries if available
-                window_boundaries = None
-                if hasattr(self, "overlapping_windows"):
-                    window_boundaries = [(w['start'], w['end']) for w in self.overlapping_windows]
-
                 report_m_hat_segments(
-                    self.data_dict, self.time_windowed, self.output_dir,
-                    window_boundaries=window_boundaries
+                    self.data_dict, self.time_windowed, self.output_dir
                 )
             
             if "r_hat" in self.save_reports:
-                # Extract window boundaries if available
-                window_boundaries = None
-                if hasattr(self, "overlapping_windows"):
-                    window_boundaries = [(w['start'], w['end']) for w in self.overlapping_windows]
-
                 report_r_hat_segments(
-                    self.data_dict, self.time_windowed, self.output_dir,
-                    window_boundaries=window_boundaries
+                    self.data_dict, self.time_windowed, self.output_dir
                 )
             
             if "ica" in self.save_reports:

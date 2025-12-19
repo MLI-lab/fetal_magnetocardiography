@@ -215,7 +215,6 @@ def report_m_hat_segments(
     output_dir,
     segment_duration=5,
     label=["Fetal", "Maternal"],
-    window_boundaries=None,
 ):
     """
     Generates segmented plots of dipole moments (`m_hat`) for each entry in `data_dict` and saves them to a multi-page PDF report.
@@ -228,7 +227,6 @@ def report_m_hat_segments(
         output_dir (str): Directory path where the PDF report will be saved.
         segment_duration (int, optional): Duration (in seconds) of each segment to plot. Defaults to 5.
         label (list of str, optional): List of labels for each key in `data_dict`, used in plot titles. Defaults to ["Fetal", "Maternal"].
-        window_boundaries (list of tuple, optional): List of (start_idx, end_idx) for processing windows to visualize.
     """
 
     # Create PDF backend
@@ -270,61 +268,31 @@ def report_m_hat_segments(
                 start = segment_idx * segment_samples
                 end = min((segment_idx + 1) * segment_samples, len(time_))
 
-                ax.plot(time_[start:end], m_hat[start:end, 0], label="x", zorder=3)
-                ax.plot(time_[start:end], m_hat[start:end, 1], label="y", zorder=3)
-                ax.plot(time_[start:end], m_hat[start:end, 2], label="z", zorder=3)
+                ax.plot(time_[start:end], m_hat[start:end, 0], label="x")
+                ax.plot(time_[start:end], m_hat[start:end, 1], label="y")
+                ax.plot(time_[start:end], m_hat[start:end, 2], label="z")
                 ax.set_title(
                     f"{label[k]}: {time_[start]:.1f}s to {time_[end - 1]:.1f}s"
                 )
                 ax.set_ylabel("Magnetic Moment [$\mathrm{\mu}$Am$^2$]")
-                ax.grid(True, zorder=0)
+                ax.grid(True)
                 ax.legend(loc="upper right")
 
-                # Highlight artifact regions
                 if (
                     "artifacts" in data_dict[key]
                     and len(data_dict[key]["artifacts"]) > 0
                 ):
-                    # Get y-limits for the current segment
-                    segment_data = m_hat[start:end]
-                    y_min = np.nanmin(segment_data) if not np.all(np.isnan(segment_data)) else -1
-                    y_max = np.nanmax(segment_data) if not np.all(np.isnan(segment_data)) else 1
-                    
                     ax.fill_between(
                         time_[start:end],
-                        y_min,
-                        y_max,
+                        np.nanmin(data_dict[key]["dipole_moments"]),
+                        np.nanmax(data_dict[key]["dipole_moments"]),
                         where=data_dict[key]["artifacts"][start:end],
-                        alpha=0.3,
-                        zorder=1,
+                        alpha=0.25,
+                        zorder=0,
                         interpolate=False,
                         label="Artifact",
-                        color="red",
+                        color="orange",
                     )
-                
-                # Plot window boundaries if provided
-                if window_boundaries:
-                    plotted_boundaries = False
-                    for w_start, w_end in window_boundaries:
-                        # Convert indices to time
-                        if w_start < len(time_):
-                            t_start = time_[w_start]
-                            # Check if start is within current plot range
-                            if t_start >= time_[start] and t_start <= time_[end - 1]:
-                                ax.axvline(x=t_start, color='blue', linestyle='--', alpha=0.6, linewidth=1.5, zorder=2,
-                                          label='Window Start' if not plotted_boundaries else '')
-                                plotted_boundaries = True
-                        
-                        # Handle end index
-                        if w_end < len(time_):
-                            t_end = time_[w_end]
-                        else:
-                            t_end = time_[-1]
-
-                        # Check if end is within current plot range
-                        if t_end >= time_[start] and t_end <= time_[end - 1]:
-                            ax.axvline(x=t_end, color='green', linestyle=':', alpha=0.6, linewidth=1.5, zorder=2,
-                                      label='Window End' if not plotted_boundaries else '')
 
             axes[-1].set_xlabel("Time [s]")
             plt.tight_layout()
