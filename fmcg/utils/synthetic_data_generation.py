@@ -1,11 +1,8 @@
-from fmcg.utils import plot_utils, utils
-
-
 import numpy as np
-from scipy.signal import decimate
+from scipy.signal import decimate, resample
 
 from fmcg.utils.data import load_vcg_data
-from fmcg.utils.utils import rot, resample
+from fmcg.utils.utils import rot
 
 
 def add_aligned_noise(
