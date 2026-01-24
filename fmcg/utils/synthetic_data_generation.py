@@ -2,7 +2,10 @@ import numpy as np
 from scipy.signal import decimate, resample
 
 from fmcg.utils.data import load_vcg_data
+from fmcg.utils import utils
 from fmcg.utils.utils import rot
+from fmcg.fitting.field_model import ForwardModel
+from fmcg.utils.plotting import plot_utils
 
 
 def add_aligned_noise(
@@ -111,13 +114,13 @@ def add_aligned_noise(
         noise_data_trunc = noise_data[:min_length].copy()
 
         # Add noise
-        noisy_field = utils.add_noise_to_field(
+        noisy_field = add_noise_to_field(
             field_data_trunc, noise_data_trunc, snr_db=snr_db, win=win
         )
 
     elif noise_type == "gaussian":
         # Use existing gaussian noise function
-        noisy_field = utils.add_gaussian_noise_to_field(
+        noisy_field = add_gaussian_noise_to_field(
             field_data, snr_db=snr_db, seed=seed, win=win
         )
 
@@ -340,3 +343,493 @@ def generate_synthetic_dipole_signals(
         fs=fs,
         num_dipoles=num_dipoles,
     )
+
+
+def sample_physiological_position(
+    baseline,
+    bnds,
+    sigma=0.05,
+    seed=None,
+    constraints=None,
+):
+    """
+    Sample a single physiological position using Gaussian perturbation with rejection sampling.
+
+    Parameters
+    ----------
+    baseline : array (3,)
+        Baseline position [x, y, z] in meters
+    bnds : array (3, 2)
+        Bounds for each coordinate [[x_min, x_max], [y_min, y_max], [z_min, z_max]]
+    sigma : float
+        Gaussian standard deviation for perturbations (meters)
+    seed : int or None
+        Random seed
+    constraints : dict or None
+        Additional constraints to check. Keys: 'min_z', 'max_z', 'other_position' (for separation)
+
+    Returns
+    -------
+    position : array (3,)
+        Sampled position satisfying all constraints
+    """
+    rng = np.random.default_rng(seed)
+    max_attempts = 1000
+
+    for _ in range(max_attempts):
+        # Sample perturbation
+        pos = baseline + rng.normal(0, sigma, size=3)
+
+        # Check bounds
+        within_bounds = all(
+            bnds[i, 0] <= pos[i] <= bnds[i, 1] for i in range(3)
+        )
+        if not within_bounds:
+            continue
+
+        # Check additional constraints if provided
+        if constraints:
+            if 'min_z' in constraints and pos[2] < constraints['min_z']:
+                continue
+            if 'max_z' in constraints and pos[2] > constraints['max_z']:
+                continue
+            if 'other_position' in constraints:
+                other = constraints['other_position']
+                separation = np.linalg.norm(pos - other)
+                min_sep = constraints.get('min_separation', 0.05)
+                if separation < min_sep:
+                    continue
+
+        return pos
+
+    # If rejection sampling fails, return baseline
+    return baseline
+
+
+def generate_dipole_movement(
+    r_init,
+    bnds,
+    n_samples,
+    movement_type='random_walk',
+    step_size=0.0001,
+    tau=2000,
+    momentum=0.95,
+    seed=None,
+):
+    """
+    Generate time-varying dipole positions with physiological constraints.
+
+    Parameters
+    ----------
+    r_init : array (3,) or (n_dipoles, 3)
+        Initial position(s) in meters
+    bnds : array (3, 2) or (n_dipoles, 3, 2)
+        Position bounds
+    n_samples : int
+        Number of time samples
+    movement_type : str
+        - 'static': No movement (constant position)
+        - 'random_walk': Brownian-like random walk with reflecting boundaries
+        - 'constrained_random_walk': Smoother random walk with temporal correlation
+    step_size : float
+        Standard deviation of position changes per time step (meters)
+    tau : int
+        Temporal correlation length for 'constrained_random_walk' (samples).
+        Higher values = longer memory = smoother trajectories.
+    momentum : float
+        Velocity momentum parameter (0-1). Higher values preserve velocity direction,
+        creating smoother, more inertial movement. Default 0.95 gives physiological motion.
+    seed : int or None
+        Typical: 0.0001 m (0.1 mm) for realistic smooth fetal movement at 500 Hz
+    tau : int
+        Temporal correlation length for constrained_random_walk (samples)
+    seed : int or None
+        Random seed
+
+    Returns
+    -------
+    r_trajectory : array (n_samples, n_dipoles, 3)
+        Time-varying positions
+    """
+    rng = np.random.default_rng(seed)
+
+    # Handle single dipole case
+    if r_init.ndim == 1:
+        r_init = r_init.reshape(1, 3)
+        bnds = bnds.reshape(1, 3, 2)
+
+    n_dipoles = r_init.shape[0]
+    r_trajectory = np.zeros((n_samples, n_dipoles, 3))
+    r_trajectory[0] = r_init
+
+    if movement_type == 'static':
+        # No movement - replicate initial position
+        for t in range(1, n_samples):
+            r_trajectory[t] = r_init
+        return r_trajectory
+
+    elif movement_type == 'random_walk':
+        # Simple random walk with reflecting boundaries
+        for t in range(1, n_samples):
+            # Random step for each dipole
+            steps = rng.normal(0, step_size, size=(n_dipoles, 3))
+            new_pos = r_trajectory[t - 1] + steps
+
+            # Reflect at boundaries
+            for d in range(n_dipoles):
+                for i in range(3):
+                    if new_pos[d, i] < bnds[d, i, 0]:
+                        new_pos[d, i] = 2 * bnds[d, i, 0] - new_pos[d, i]
+                    elif new_pos[d, i] > bnds[d, i, 1]:
+                        new_pos[d, i] = 2 * bnds[d, i, 1] - new_pos[d, i]
+
+            r_trajectory[t] = new_pos
+
+    elif movement_type == 'constrained_random_walk':
+        # Smoother random walk with temporal correlation (Ornstein-Uhlenbeck-like) + momentum
+        velocity = np.zeros((n_dipoles, 3))
+
+        for t in range(1, n_samples):
+            # Update velocity with momentum, decay, and random forcing
+            random_force = rng.normal(0, step_size, size=(n_dipoles, 3))
+            velocity = momentum * velocity + (1 - 1/tau) * random_force
+            new_pos = r_trajectory[t - 1] + velocity
+
+            # Reflect at boundaries and reverse velocity
+            for d in range(n_dipoles):
+                for i in range(3):
+                    if new_pos[d, i] < bnds[d, i, 0]:
+                        new_pos[d, i] = 2 * bnds[d, i, 0] - new_pos[d, i]
+                        velocity[d, i] *= -0.5  # Reverse and dampen
+                    elif new_pos[d, i] > bnds[d, i, 1]:
+                        new_pos[d, i] = 2 * bnds[d, i, 1] - new_pos[d, i]
+                        velocity[d, i] *= -0.5
+
+            r_trajectory[t] = new_pos
+
+    return r_trajectory
+
+
+def generate_synthetic_fmcg_recording(
+    r_sensors,
+    # VCG source configuration
+    vcg_fetal_record="patient104/s0306lre",
+    vcg_maternal_record="patient104/s0306lre",
+    vcg_dataset_path=None,
+    # Position sampling
+    fetal_pos_baseline=np.array([0.0, -0.05, 0.0]),
+    maternal_pos_baseline=np.array([0.0, -0.05, 0.35]),
+    fetal_pos_bounds=np.array([[-0.15, 0.15], [-0.15, 0.0], [-0.15, 0.15]]),
+    maternal_pos_bounds=np.array([[-0.15, 0.15], [-0.15, 0.0], [0.15, 0.6]]),
+    position_sampling_sigma=0.03,
+    min_separation=0.05,
+    # Dipole movement
+    enable_movement=False,
+    movement_type='constrained_random_walk',
+    movement_step_size=0.0001,
+    movement_tau=2000,
+    movement_momentum=0.95,
+    # VCG processing
+    fetal_moment_amplitude_nAm2=20.0,
+    maternal_moment_amplitude_nAm2=6000.0,
+    moment_amplitude_variation=0.2,
+    fetal_time_offset=0.5,
+    fetal_downsample_factor=0.6,
+    fetal_rot=np.array([180, 0, 0]),
+    maternal_rot=np.array([0, 0, 0]),
+    decimation_factor=2,
+    sampfrom=0,
+    sampto=None,
+    # Noise configuration
+    snr_db=10,  # 10 dB SNR (less aggressive noise than 3 dB)
+    noise_type='gaussian',
+    noise_data=None,
+    fs_noise=None,
+    # Output
+    seed=None,
+    return_clean=False,
+):
+    """
+    Generate a complete synthetic fMCG recording with physiological constraints.
+    
+    This function combines VCG-based cardiac signals, physiological position sampling,
+    optional dipole movement, forward modeling, and noise addition to create realistic
+    synthetic fMCG data for benchmarking reconstruction algorithms.
+
+    Parameters
+    ----------
+    r_sensors : array (n_sensors, 3)
+        Sensor array positions in meters
+    vcg_fetal_record : str
+        PTB database record for fetal VCG (e.g., "patient104/s0306lre")
+    vcg_maternal_record : str
+        PTB database record for maternal VCG
+    vcg_dataset_path : str or None
+        Path to PTB VCG database (if None, loads from PhysioNet)
+    fetal_pos_baseline : array (3,)
+        Baseline fetal position [x, y, z] in meters
+    maternal_pos_baseline : array (3,)
+        Baseline maternal position in meters
+    fetal_pos_bounds : array (3, 2)
+        Fetal position bounds [[x_min, x_max], [y_min, y_max], [z_min, z_max]]
+    maternal_pos_bounds : array (3, 2)
+        Maternal position bounds
+    position_sampling_sigma : float
+        Gaussian std for position perturbation (meters)
+    min_separation : float
+        Minimum fetal-maternal separation (meters)
+    enable_movement : bool
+        Whether to simulate time-varying dipole positions
+    movement_type : str
+        Type of movement ('static', 'random_walk', 'constrained_random_walk')
+    movement_step_size : float
+        Movement step size per time sample (meters)
+    movement_tau : int
+        Temporal correlation length for smooth movement (samples)
+    movement_momentum : float
+        Velocity momentum for ultra-smooth trajectories (0-1, higher=smoother)
+    fetal_moment_amplitude_nAm2 : float
+        Target magnetic dipole moment amplitude for fetal signal in nanoAmpere·meter² (nA·m²).
+        Typical fMCG: 10-50 nA·m². Default 20 nA·m².
+    maternal_moment_amplitude_nAm2 : float
+        Target magnetic dipole moment amplitude for maternal signal in nA·m².
+        Typical adult MCG: 3000-10000 nA·m². Default 6000 nA·m².
+    moment_amplitude_variation : float
+        Random variation around target amplitudes (fraction). E.g., 0.2 = ±20%.
+        Sampled uniformly as amplitude * (1 ± variation). Default 0.2.
+    fetal_time_offset : float
+        Time offset between fetal and maternal signals (seconds)
+    fetal_downsample_factor : float
+        Fetal heart rate relative to maternal (typically 0.5-0.7)
+    fetal_rot : array (3,)
+        Fetal dipole orientation [rx, ry, rz] in degrees
+    maternal_rot : array (3,)
+        Maternal dipole orientation in degrees
+    decimation_factor : int
+        Downsample factor from 1000 Hz
+    sampfrom : float
+        Start time (seconds)
+    sampto : float or None
+        End time (seconds)
+    snr_db : float
+        Signal-to-noise ratio in dB
+    noise_type : str
+        'gaussian' or 'recording'
+    noise_data : array or None
+        Recorded noise for noise_type='recording'
+    fs_noise : float or None
+        Sampling frequency of noise_data
+    seed : int or None
+        Random seed for reproducibility
+    return_clean : bool
+        If True, also return clean (noiseless) field
+
+    Returns
+    -------
+    data : dict
+        Dictionary containing:
+        - 'field_measured': (n_samples, n_sensors, 3) - Noisy field measurements in pT
+        - 'field_clean': (n_samples, n_sensors, 3) - Clean field (if return_clean=True)
+        - 'm_true': (n_samples, 2, 3) - True magnetic moments in μA·m²
+        - 'r_true': (n_samples, 2, 3) - True positions in meters
+        - 'time': (n_samples,) - Time array in seconds
+        - 'fs': float - Sampling frequency in Hz
+        - 'metadata': dict - Configuration metadata
+    """
+    rng = np.random.default_rng(seed)
+
+    # Sample initial positions with physiological constraints
+    print("Sampling physiological positions...")
+
+    # Sample fetal position first
+    r_fetal_init = sample_physiological_position(
+        baseline=fetal_pos_baseline,
+        bnds=fetal_pos_bounds,
+        sigma=position_sampling_sigma,
+        seed=rng.integers(0, 2**31) if seed is not None else None,
+        constraints={'max_z': fetal_pos_bounds[2, 1]},  # Fetal not too deep
+    )
+
+    # Sample maternal position with separation constraint
+    r_maternal_init = sample_physiological_position(
+        baseline=maternal_pos_baseline,
+        bnds=maternal_pos_bounds,
+        sigma=position_sampling_sigma,
+        seed=rng.integers(0, 2**31) if seed is not None else None,
+        constraints={
+            'min_z': maternal_pos_bounds[2, 0],  # Maternal deeper than fetal
+            'other_position': r_fetal_init,
+            'min_separation': min_separation,
+        },
+    )
+
+    print(f"  Fetal position: {r_fetal_init * 100} cm")
+    print(f"  Maternal position: {r_maternal_init * 100} cm")
+    print(f"  Separation: {np.linalg.norm(r_fetal_init - r_maternal_init) * 100:.1f} cm")
+
+    # Load VCG data for fetal and maternal separately
+    print(f"Loading VCG data...")
+    print(f"  Fetal: {vcg_fetal_record}")
+    fetal_vcg, fetal_ecg_II, fs_vcg = load_vcg_data(
+        record=vcg_fetal_record,
+        base_path=vcg_dataset_path,
+        plot=False,
+    )
+
+    print(f"  Maternal: {vcg_maternal_record}")
+    maternal_vcg, maternal_ecg_II, _ = load_vcg_data(
+        record=vcg_maternal_record,
+        base_path=vcg_dataset_path,
+        plot=False,
+    )
+
+    # Downsample VCG signals
+    fetal_vcg = decimate(fetal_vcg, decimation_factor, axis=0)
+    maternal_vcg = decimate(maternal_vcg, decimation_factor, axis=0)
+    fetal_ecg_II = decimate(fetal_ecg_II, decimation_factor, axis=0)
+    maternal_ecg_II = decimate(maternal_ecg_II, decimation_factor, axis=0)
+    fs = fs_vcg / decimation_factor
+
+    # Convert time values to indices
+    sampfrom_idx = int(sampfrom * fs)
+    fetal_offset_idx = int(fetal_time_offset * fs)
+    if sampto is None:
+        sampto_idx = min(len(fetal_vcg), len(maternal_vcg))
+    else:
+        sampto_idx = int(sampto * fs)
+
+    # Convert Frank leads to Heart Shield coordinates
+    fetal_vcg = np.array([
+        -fetal_vcg[:, 0], -fetal_vcg[:, 2], -fetal_vcg[:, 1]
+    ]).T
+    maternal_vcg = np.array([
+        -maternal_vcg[:, 0], -maternal_vcg[:, 2], -maternal_vcg[:, 1]
+    ]).T
+
+    # Convert moment amplitudes from nA·m² to μA·m² (factor of 1000)
+    # VCG signals are in mV and are NUMERICALLY treated as μA·m² (no unit conversion)
+    # This matches the old generate_synthetic_dipole_signals() behavior
+    fetal_moment_target = fetal_moment_amplitude_nAm2 / 1000.0  # nA·m² to μA·m²
+    maternal_moment_target = maternal_moment_amplitude_nAm2 / 1000.0
+    
+    # Sample random variation for this recording
+    if moment_amplitude_variation > 0:
+        fetal_variation = rng.uniform(1 - moment_amplitude_variation, 1 + moment_amplitude_variation)
+        maternal_variation = rng.uniform(1 - moment_amplitude_variation, 1 + moment_amplitude_variation)
+        fetal_moment_target *= fetal_variation
+        maternal_moment_target *= maternal_variation
+    
+    # Extract and process maternal signal
+    maternal_signal = maternal_vcg[sampfrom_idx:sampto_idx]
+    n_samples = len(maternal_signal)
+
+    # Extract and resample fetal signal (different heart rate)
+    fetal_start_idx = sampfrom_idx + fetal_offset_idx
+    original_fetal_samples_needed = int(n_samples / fetal_downsample_factor)
+    fetal_signal = fetal_vcg[
+        fetal_start_idx : fetal_start_idx + original_fetal_samples_needed
+    ]
+    fetal_signal = resample(fetal_signal, n_samples, axis=0)
+    
+    # Compute peak magnitude of VCG signals for scaling (corresponds to R-peak)
+    # Target amplitudes refer to peak cardiac dipole moment, not mean
+    fetal_magnitudes = np.linalg.norm(fetal_signal, axis=1)
+    maternal_magnitudes = np.linalg.norm(maternal_signal, axis=1)
+    fetal_vcg_max_mag = np.max(fetal_magnitudes)
+    maternal_vcg_max_mag = np.max(maternal_magnitudes)
+    
+    # Scale signals: VCG (mV) is numerically treated as dipole moment (μA·m²)
+    # Target amplitude refers to peak magnitude (R-peak)
+    fetal_scaling = fetal_moment_target / fetal_vcg_max_mag
+    maternal_scaling = maternal_moment_target / maternal_vcg_max_mag
+    
+    fetal_signal = fetal_scaling * fetal_signal
+    maternal_signal = maternal_scaling * maternal_signal
+    
+    print(f"  Moment amplitude (with random variation):")
+    print(f"    Fetal: {fetal_moment_target:.3f} μA·m² = {fetal_moment_target*1000:.1f} nA·m² (peak magnitude: {fetal_vcg_max_mag:.3f} mV, scaling: {fetal_scaling:.4f})")
+    print(f"    Maternal: {maternal_moment_target:.3f} μA·m² = {maternal_moment_target*1000:.1f} nA·m² (peak magnitude: {maternal_vcg_max_mag:.3f} mV, scaling: {maternal_scaling:.4f})")
+    print(f"    Ratio: {maternal_moment_target/fetal_moment_target:.1f}×")
+    
+    # Apply rotations
+    fetal_signal = rot(fetal_signal, rot=fetal_rot)
+    maternal_signal = rot(maternal_signal, rot=maternal_rot)
+
+    # Construct magnetic moments
+    m_true = np.stack([fetal_signal, maternal_signal], axis=1)  # (n_samples, 2, 3)
+
+    # Generate dipole trajectories
+    if enable_movement:
+        print(f"Generating dipole movement ({movement_type})...")
+        r_init = np.array([r_fetal_init, r_maternal_init])  # (2, 3)
+        bnds = np.array([fetal_pos_bounds, maternal_pos_bounds])  # (2, 3, 2)
+
+        r_true = generate_dipole_movement(
+            r_init=r_init,
+            bnds=bnds,
+            n_samples=n_samples,
+            movement_type=movement_type,
+            step_size=movement_step_size,
+            tau=movement_tau,
+            momentum=movement_momentum,
+            seed=rng.integers(0, 2**31) if seed is not None else None,
+        )  # (n_samples, 2, 3)
+    else:
+        # Static positions
+        r_true = np.tile(
+            np.array([r_fetal_init, r_maternal_init])[None, :, :],
+            (n_samples, 1, 1)
+        )
+
+    # Forward model: compute magnetic field at sensors
+    print("Computing forward model...")
+    forward_model = ForwardModel(r_sensors)
+    field_clean = forward_model.forward_numpy(m_true, r_true)  # (n_samples, n_sensors, 3)
+    
+    # With mu0_4pi=0.1 and moments in μA·m², forward model outputs field in pT directly
+    # No unit conversion needed
+
+    # Add noise
+    time = np.arange(n_samples) / fs
+    print(f"Adding noise (SNR={snr_db} dB, type={noise_type})...")
+    field_measured = add_aligned_noise(
+        field_data=field_clean,
+        time=time,
+        noise_data=noise_data,
+        fs_field=fs,
+        fs_noise=fs_noise,
+        noise_type=noise_type,
+        snr_db=snr_db,
+        seed=rng.integers(0, 2**31) if seed is not None else None,
+    )
+
+    # Prepare output
+    data = {
+        'field_measured': field_measured,
+        'm_true': m_true,
+        'r_true': r_true,
+        'time': time,
+        'fs': fs,
+        'metadata': {
+            'vcg_fetal_record': vcg_fetal_record,
+            'vcg_maternal_record': vcg_maternal_record,
+            'r_fetal_init': r_fetal_init,
+            'r_maternal_init': r_maternal_init,
+            'fetal_scaling': fetal_scaling,
+            'fetal_downsample_factor': fetal_downsample_factor,
+            'enable_movement': enable_movement,
+            'movement_type': movement_type if enable_movement else 'static',
+            'snr_db': snr_db,
+            'noise_type': noise_type,
+            'seed': seed,
+            'duration': n_samples / fs,
+            'n_samples': n_samples,
+        }
+    }
+
+    if return_clean:
+        data['field_clean'] = field_clean
+
+    print(f"✅ Generated synthetic recording: {n_samples} samples ({n_samples/fs:.1f} s) at {fs} Hz")
+
+    return data
