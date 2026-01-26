@@ -287,6 +287,7 @@ def _process_segment_worker(args):
                 if hasattr(mdl.best_loss, "tolist")
                 else float(mdl.best_loss)
             ),
+            "best_i": mdl.best_i,
             "time": segment_time,
             "segment_idx": segment_idx,
         }

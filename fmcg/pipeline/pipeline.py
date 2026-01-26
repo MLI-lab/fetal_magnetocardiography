@@ -7,6 +7,7 @@ import datetime
 import pickle
 import json
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
+import multiprocessing
 import threading
 import traceback
 import logging
@@ -251,35 +252,52 @@ class Pipeline:
     def _load_data(self):
         """
         Load the fMCG data and noise data from the specified dataset path.
+        If data_loader is provided (synthetic mode), use it instead of TDMS loading.
         """
 
         self._log_step_header("Data Loading")
-        logger.info(f"Dataset Path: {self.config['data']['ds_path']}")
-        logger.info(
-            f"Patient: {self.config['data']['patient']}, Series: {self.config['data']['series']}"
-        )
-
-        # Load the raw signal and noise data
-        self.sig_data_dict_raw, self.time, self.fs, self.noise_data_dict_raw = (
-            data.load_structured_patient_data_and_noise(
-                self.systemconfig,
-                self.measurementconfig,
-                **{
-                    k: self.config["data"][k]
-                    for k in self.config["data"].keys()
-                    & {
-                        "ds_path",
-                        "patient",
-                        "series",
-                        "sig_group_names",
-                        "noise_group_names",
-                        "noise_patient",
-                        "noise_series",
-                    }
-                },
-                files="all",
+        
+        if self.data_loader is not None:
+            # Synthetic data mode
+            logger.info("Loading synthetic data...")
+            self.sig_data_dict_raw, self.time, self.fs, self.noise_data_dict_raw = (
+                self.data_loader.load_structured_patient_data_and_noise(
+                    self.systemconfig,
+                    self.measurementconfig,
+                )
             )
-        )
+            # Store ground truth for evaluation
+            self.ground_truth = self.data_loader.ground_truth
+            logger.info("Synthetic data loaded with ground truth")
+        else:
+            # Normal TDMS mode
+            logger.info(f"Dataset Path: {self.config['data']['ds_path']}")
+            logger.info(
+                f"Patient: {self.config['data']['patient']}, Series: {self.config['data']['series']}"
+            )
+
+            # Load the raw signal and noise data
+            self.sig_data_dict_raw, self.time, self.fs, self.noise_data_dict_raw = (
+                data.load_structured_patient_data_and_noise(
+                    self.systemconfig,
+                    self.measurementconfig,
+                    **{
+                        k: self.config["data"][k]
+                        for k in self.config["data"].keys()
+                        & {
+                            "ds_path",
+                            "patient",
+                            "series",
+                            "sig_group_names",
+                            "noise_group_names",
+                            "noise_patient",
+                            "noise_series",
+                        }
+                    },
+                    files="all",
+                )
+            )
+            
         signal_length = len(list(self.sig_data_dict_raw.values())[0]) / self.fs
         noise_length = len(list(self.noise_data_dict_raw.values())[0]) / self.fs
 
@@ -460,6 +478,9 @@ class Pipeline:
             self.clean_segments = _find_continuous_segments(
                 artifacts_mask, min_length=min_segment_length
             )
+            
+            if len(self.clean_segments) == 0:
+                print(f"WARNING: No clean segments found! Check min_segment_length and artifact pattern.")
 
             total_clean_time = (
                 sum(end - start for start, end in self.clean_segments) / self.fs
@@ -689,7 +710,10 @@ class Pipeline:
 
                     # Process segments in parallel
                     self.segment_results = []
-                    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    
+                    # Use spawn context to avoid fork issues
+                    mp_context = multiprocessing.get_context('spawn')
+                    with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp_context) as executor:
                         future_to_idx = {
                             executor.submit(_process_segment_worker, args): args[2]
                             for args in segment_args
@@ -1195,6 +1219,7 @@ class Pipeline:
         log_note="",
         log_dict={},
         verbose=False,
+        data_loader=None,
     ):
         """
         Run the complete pipeline from data loading to post-processing.
@@ -1207,10 +1232,12 @@ class Pipeline:
             log_note: Optional note to include in the log record
             log_dict: Optional dictionary for logging additional information
             verbose: If True, enables verbose logging
+            data_loader: Optional synthetic data loader (for evaluation)
 
         Note:
             If no noise data is provided in the configuration, the pipeline will not execute and will return early.
             The config parameter accepts both legacy dict format and new PipelineConfig dataclass.
+            If data_loader is provided, it will be used instead of loading from TDMS files.
         """
 
         if verbose:
@@ -1231,7 +1258,18 @@ class Pipeline:
             self.config = config
 
         # Use the dict-like config from here on
-        self.device = self.config.get("device", "cpu")
+        # Handle both "device" (single) and "devices" (list for batch processing)
+        if "device" in self.config:
+            self.device = self.config["device"]
+        elif "devices" in self.config and self.config["devices"]:
+            self.device = self.config["devices"][0]  # Use first device
+            logger.info(f"Using first device from 'devices' list: {self.device}")
+        else:
+            self.device = "cpu"
+        
+        # CRITICAL: Set device in config dict so workers can access it
+        self.config["device"] = self.device
+        
         self._step_num = 1
         self.save_reports = self.config.get("save_reports", False)
         self.save_plots = self.config.get("save_plots", False)
@@ -1240,6 +1278,8 @@ class Pipeline:
         self.mask = mask
         self.log_note = log_note
         self.log_dict = log_dict
+        self.data_loader = data_loader  # Store synthetic data loader if provided
+        self.ground_truth = None  # Will be populated if using synthetic data
 
         self.sig_data_dict_raw = None
         self.noise_data_dict_raw = None
