@@ -415,6 +415,8 @@ def generate_dipole_movement(
     tau=2000,
     momentum=0.95,
     seed=None,
+    fs=1000,
+    lowpass_cutoff=None,
 ):
     """
     Generate time-varying dipole positions with physiological constraints.
@@ -431,20 +433,24 @@ def generate_dipole_movement(
         - 'static': No movement (constant position)
         - 'random_walk': Brownian-like random walk with reflecting boundaries
         - 'constrained_random_walk': Smoother random walk with temporal correlation
+        - 'ou_process': Ornstein-Uhlenbeck overdamped process (realistic fetal movement)
     step_size : float
         Standard deviation of position changes per time step (meters)
-    tau : int
-        Temporal correlation length for 'constrained_random_walk' (samples).
-        Higher values = longer memory = smoother trajectories.
+        For 'ou_process': controls diffusion strength (sigma). Typical: 0.02 for ~2cm/s drift
+    tau : int or float
+        For 'constrained_random_walk': temporal correlation length (samples)
+        For 'ou_process': time constant in seconds (how long a drift lasts). Typical: 2.0 seconds
     momentum : float
-        Velocity momentum parameter (0-1). Higher values preserve velocity direction,
-        creating smoother, more inertial movement. Default 0.95 gives physiological motion.
+        Velocity momentum parameter (0-1) for 'constrained_random_walk'.
+        Higher values preserve velocity direction. Default 0.95 gives physiological motion.
     seed : int or None
-        Typical: 0.0001 m (0.1 mm) for realistic smooth fetal movement at 500 Hz
-    tau : int
-        Temporal correlation length for constrained_random_walk (samples)
-    seed : int or None
-        Random seed
+        Random seed for reproducibility
+    fs : float
+        Sampling frequency in Hz (used for 'ou_process' to compute dt). Default 1000 Hz.
+    lowpass_cutoff : float or None
+        If provided, apply Butterworth lowpass filter with this cutoff frequency (Hz).
+        Typical: 5 Hz to smooth out high-frequency jitter while preserving slow drift.
+        Only applies to 'ou_process' and 'constrained_random_walk'.
 
     Returns
     -------
@@ -507,6 +513,60 @@ def generate_dipole_movement(
 
             r_trajectory[t] = new_pos
 
+    elif movement_type == 'ou_process':
+        # Ornstein-Uhlenbeck process for overdamped fetal movement in amniotic fluid
+        # This simulates the high-viscosity environment where movement stops quickly
+        # after muscle contraction, creating smooth ~2 cm/s drifts without momentum
+        
+        dt = 1.0 / fs  # Time step in seconds
+        theta = 1.0 / tau  # Stiffness parameter (mean-reversion rate)
+        sigma = step_size  # Diffusion strength (controls drift speed)
+        mu = r_init.copy()  # Rest/central position (starting position)
+        
+        for t in range(1, n_samples):
+            # 1. Calculate drift force (mean-reverting to rest position)
+            drift = theta * (mu - r_trajectory[t - 1]) * dt
+            
+            # 2. Calculate diffusion (random walk component)
+            diffusion = sigma * np.sqrt(dt) * rng.normal(size=(n_dipoles, 3))
+            
+            # 3. Update position
+            new_pos = r_trajectory[t - 1] + drift + diffusion
+            
+            # 4. Apply soft boundary constraints (sticky walls, not bouncing)
+            # This feels more like a womb than hard reflections
+            for d in range(n_dipoles):
+                for i in range(3):
+                    # Clip to boundaries - creates natural "stalling" at limits
+                    new_pos[d, i] = np.clip(new_pos[d, i], bnds[d, i, 0], bnds[d, i, 1])
+            
+            r_trajectory[t] = new_pos
+
+    else:
+        raise ValueError(
+            f"Unknown movement_type '{movement_type}'. "
+            f"Choose from: 'static', 'random_walk', 'constrained_random_walk', 'ou_process'"
+        )
+
+    # Apply low-pass filter if requested (removes high-frequency jitter)
+    if lowpass_cutoff is not None and movement_type != 'static':
+        from scipy.signal import butter, filtfilt
+        
+        # Design Butterworth filter
+        nyquist = fs / 2
+        normalized_cutoff = lowpass_cutoff / nyquist
+        b, a = butter(4, normalized_cutoff, btype='low')
+        
+        # Apply filter to each dipole and coordinate independently
+        for d in range(n_dipoles):
+            for i in range(3):
+                r_trajectory[:, d, i] = filtfilt(b, a, r_trajectory[:, d, i])
+        
+        # Re-apply boundary constraints after filtering (filter may violate bounds)
+        for d in range(n_dipoles):
+            for i in range(3):
+                r_trajectory[:, d, i] = np.clip(r_trajectory[:, d, i], bnds[d, i, 0], bnds[d, i, 1])
+
     return r_trajectory
 
 
@@ -526,16 +586,17 @@ def generate_synthetic_fmcg_recording(
     # Dipole movement
     enable_movement=False,
     movement_type='constrained_random_walk',
-    movement_step_size=0.0001,
+    movement_step_size=0.00001,
     movement_tau=2000,
-    movement_momentum=0.95,
+    movement_momentum=0.98,
+    movement_lowpass_cutoff=None,
     # VCG processing
-    fetal_moment_amplitude_nAm2=20.0,
+    fetal_moment_amplitude_nAm2=60.0,
     maternal_moment_amplitude_nAm2=6000.0,
     moment_amplitude_variation=0.2,
     fetal_time_offset=0.5,
     fetal_downsample_factor=0.6,
-    fetal_rot=np.array([180, 0, 0]),
+    fetal_rot=np.array([180, 0, -90]),
     maternal_rot=np.array([0, 0, 0]),
     decimation_factor=2,
     sampfrom=0,
@@ -548,6 +609,7 @@ def generate_synthetic_fmcg_recording(
     # Output
     seed=None,
     return_clean=False,
+    device="cpu",
 ):
     """
     Generate a complete synthetic fMCG recording with physiological constraints.
@@ -581,13 +643,17 @@ def generate_synthetic_fmcg_recording(
     enable_movement : bool
         Whether to simulate time-varying dipole positions
     movement_type : str
-        Type of movement ('static', 'random_walk', 'constrained_random_walk')
+        Type of movement ('static', 'random_walk', 'constrained_random_walk', 'ou_process')
     movement_step_size : float
-        Movement step size per time sample (meters)
-    movement_tau : int
-        Temporal correlation length for smooth movement (samples)
+        Movement step size per time sample (meters). For 'ou_process', controls diffusion (sigma).
+    movement_tau : int or float
+        For 'constrained_random_walk': temporal correlation length (samples).
+        For 'ou_process': time constant in seconds.
     movement_momentum : float
-        Velocity momentum for ultra-smooth trajectories (0-1, higher=smoother)
+        Velocity momentum for 'constrained_random_walk' (0-1, higher=smoother)
+    movement_lowpass_cutoff : float or None
+        If provided, apply Butterworth lowpass filter at this frequency (Hz) to smooth trajectory.
+        Typical: 5 Hz removes jitter while preserving slow drift. Only for moving dipoles.
     fetal_moment_amplitude_nAm2 : float
         Target magnetic dipole moment amplitude for fetal signal in nanoAmpere·meter² (nA·m²).
         Typical fMCG: 10-50 nA·m². Default 20 nA·m².
@@ -773,6 +839,8 @@ def generate_synthetic_fmcg_recording(
             tau=movement_tau,
             momentum=movement_momentum,
             seed=rng.integers(0, 2**31) if seed is not None else None,
+            fs=fs,
+            lowpass_cutoff=movement_lowpass_cutoff,
         )  # (n_samples, 2, 3)
     else:
         # Static positions
@@ -782,8 +850,8 @@ def generate_synthetic_fmcg_recording(
         )
 
     # Forward model: compute magnetic field at sensors
-    print("Computing forward model...")
-    forward_model = ForwardModel(r_sensors)
+    print(f"Computing forward model on {device}...")
+    forward_model = ForwardModel(r_sensors, device=device)
     field_clean = forward_model.forward_numpy(m_true, r_true)  # (n_samples, n_sensors, 3)
     
     # With mu0_4pi=0.1 and moments in μA·m², forward model outputs field in pT directly
