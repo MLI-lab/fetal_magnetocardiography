@@ -392,19 +392,23 @@ class Pipeline:
         )
 
         # Detect (temporal) artifacts in the signal
-        artifacts_mask = detect_artifacts(
-            field_maps[:, self.axis_mask == 1],
-            fs=self.fs,
-            wavelet="haar",
-            level=7,
-            segment_length_seconds=10,
-            struct_time=10,
-            channel_agreement_percentage=0.05,
-            coeff_depth=None,
-            offset=1,
-            n_sigma=3,
-        )
-        #artifacts_mask = np.zeros_like(artifacts_mask)
+        detect_artifacts_enabled = self.config["preprocessing"].get("detect_artifacts", True)
+        if detect_artifacts_enabled:
+            artifacts_mask = detect_artifacts(
+                field_maps[:, self.axis_mask == 1],
+                fs=self.fs,
+                wavelet="haar",
+                level=7,
+                segment_length_seconds=10,
+                struct_time=10,
+                channel_agreement_percentage=0.05,
+                coeff_depth=None,
+                offset=1,
+                n_sigma=3,
+            )
+        else:
+            logger.info("Artifact detection disabled, using empty artifacts mask")
+            artifacts_mask = np.zeros(field_maps.shape[0], dtype=bool)
         self.artifacts_mask = artifacts_mask
 
 
