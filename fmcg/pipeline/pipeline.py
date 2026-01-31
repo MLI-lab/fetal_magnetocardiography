@@ -224,11 +224,17 @@ class Pipeline:
 
         # Save data if required - unified pickle file format
         if self.save_data:
+            save_dict = {
+                "data_dict": self.data_dict,
+                "heartbeats_dict": self.heartbeats_dict,
+            }
+            # Include ground truth if available (synthetic data)
+            if hasattr(self, 'ground_truth') and self.ground_truth:
+                save_dict["ground_truth"] = self.ground_truth
+                logger.info("Including ground truth in pipeline_results.pkl")
+
             with open(os.path.join(self.output_dir, "pipeline_results.pkl"), "wb") as f:
-                pickle.dump({
-                    "data_dict": self.data_dict,
-                    "heartbeats_dict": self.heartbeats_dict,
-                }, f)
+                pickle.dump(save_dict, f)
         
         # Plot results
         _plot_averaged_beats_if_enabled(
@@ -523,6 +529,24 @@ class Pipeline:
             self.clean_segments_dec = [
                 (start // q, end // q) for start, end in self.clean_segments
             ]
+
+        # CRITICAL: Decimate ground truth to match decimated field data
+        if hasattr(self, 'ground_truth') and self.ground_truth:
+            logger.info("Decimating ground truth arrays to match downsampled data")
+            gt = self.ground_truth
+
+            # Decimate m_true, r_true, time, and field_clean if present
+            for key in ['m_true', 'r_true', 'field_clean', 'time']:
+                if key in gt and isinstance(gt[key], np.ndarray):
+                    original_shape = gt[key].shape
+                    # Decimate along time axis (axis 0)
+                    gt[key] = scipy.signal.decimate(gt[key], q, axis=0)
+                    logger.info(f"  {key}: {original_shape} -> {gt[key].shape}")
+
+            # Update sampling rate
+            if 'fs' in gt:
+                gt['fs'] = self.fs_
+                logger.info(f"  fs: {self.fs} -> {gt['fs']} Hz")
 
     def _select_time_window(self):
         """Selecting the time window to process."""
@@ -963,12 +987,18 @@ class Pipeline:
                 #             simplified_segment_results.append(simplified_result)
 
                 # Save both data_dict and heartbeats_dict together in one file
+                save_dict = {
+                    "data_dict": self.data_dict,
+                    "heartbeats_dict": self.heartbeats_dict,
+                    #"field_maps": self.field_maps,
+                }
+                # Add ground truth if using synthetic data
+                if hasattr(self, 'ground_truth') and self.ground_truth:
+                    save_dict["ground_truth"] = self.ground_truth
+                    logger.info("Including ground truth in pipeline_results.pkl (segmented)")
+
                 with open(os.path.join(self.output_dir, "pipeline_results.pkl"), "wb") as f:
-                    pickle.dump({
-                        "data_dict": self.data_dict,
-                        "heartbeats_dict": self.heartbeats_dict,
-                        #"field_maps": self.field_maps,
-                    }, f)
+                    pickle.dump(save_dict, f)
 
             # # Add selected peak times to data_dict for proper report generation
             # for key in ["fetal", "maternal"]:
