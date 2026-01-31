@@ -178,7 +178,7 @@ class TanhBasis:
     def forward(self, coefficients):
         x = self.b1 * torch.tanh(coefficients) + self.b0
         if self.n_time is not None:
-            return x.tile(self.n_time, 1, 1)
+            return x.view(1, 1, -1).expand(self.n_time, -1, -1)
         return x
 
     def fit_coefficients(self, data):
@@ -213,12 +213,17 @@ class SigmoidBasis:
     def forward(self, coefficients):
         x = self.b1 / (1 + torch.exp(-coefficients)) + self.b0
         if self.n_time is not None:
-            return x.tile(self.n_time, 1, 1)
+            return x.view(1, 1, -1).expand(self.n_time, -1, -1)
         return x
 
     def fit_coefficients(self, data):
+        # If data is a time-series (n_time, n_params) and we have an expected n_time,
+        # compute the mean over available time samples to obtain a robust estimate
+        # for the constant sigmoid coefficient. Previously this used only the first
+        # sample which created inconsistencies with PiecewiseSigmoidBasis (which
+        # averages across available data for the single-segment case).
         if data.ndim == 2 and self.n_time is not None:
-            data = data[0]
+            data = data.mean(dim=0)
         return -torch.log((self.b1 / (data - self.b0)) - 1)
 
 
@@ -316,13 +321,16 @@ class PiecewiseSigmoidBasis:
         transformed = self.b1 / (1 + torch.exp(-coefficients)) + self.b0
         # Shape: (n_segments, n_params)
         
-        # Vectorized expansion: use repeat_interleave to avoid loop
-        # Each segment's values are repeated segment_length times
-        output = transformed.repeat_interleave(self.segment_length, dim=0)
-        
-        # Truncate to exact n_time if needed (last segment might be shorter)
-        if output.shape[0] > n_time:
-            output = output[:n_time, :]
+        # Optimized expansion for the static case (n_segments == 1)
+        if transformed.shape[0] == 1:
+            output = transformed.expand(n_time, -1) # repeat n_time times
+        else:
+            # Each segment's values are repeated segment_length times
+            output = transformed.unsqueeze(1).expand(-1, self.segment_length, -1).reshape(-1, self.n_params)
+            
+            # Truncate to exact n_time if needed (last segment might be shorter)
+            if output.shape[0] > n_time:
+                output = output[:n_time, :]
         
         return output
 
@@ -358,27 +366,38 @@ class PiecewiseSigmoidBasis:
             coefficients = -torch.log((self.b1 / (constant_value - self.b0)) - 1)
             
             # Repeat for all segments: shape (n_segments, n_params)
-            coefficients = coefficients.unsqueeze(0).repeat(n_segments, 1)
+            coefficients = coefficients.unsqueeze(0).expand(n_segments, -1)
             
             return coefficients.flatten()
         
         # Normal case: fit from time series data
         n_segments = self._get_n_segments(n_time)
         
-        # Vectorized segment averaging
-        # Pad or truncate data to match expected total length
-        total_needed = n_segments * self.segment_length
-        if n_time < total_needed:
-            # Pad with last value
-            padding = total_needed - n_time
-            data = torch.cat([data, data[-1:].repeat(padding, 1)], dim=0)
-        elif n_time > total_needed:
-            # Use only up to the last complete segment
-            data = data[:total_needed]
-        
-        # Reshape to (n_segments, segment_length, n_params) and average over segment_length
-        data_reshaped = data.reshape(n_segments, self.segment_length, self.n_params)
-        segment_means = data_reshaped.mean(dim=1)  # (n_segments, n_params)
+        # Handle single segment case specially to avoid padding bias
+        if n_segments == 1:
+            # Single segment: use mean of all available data, no padding needed
+            segment_means = data.mean(dim=0, keepdim=True)  # (1, n_params)
+        else:
+            # Multiple segments: process complete segments and handle partial last segment
+            complete_segments = n_time // self.segment_length
+            
+            if complete_segments > 0:
+                # Process complete segments
+                complete_length = complete_segments * self.segment_length
+                data_complete = data[:complete_length]
+                data_reshaped = data_complete.reshape(complete_segments, self.segment_length, self.n_params)
+                segment_means_complete = data_reshaped.mean(dim=1)  # (complete_segments, n_params)
+            else:
+                segment_means_complete = torch.empty(0, self.n_params, device=self.device)
+            
+            # Handle last partial segment if it exists
+            remainder = n_time % self.segment_length
+            if remainder > 0:
+                last_segment_data = data[complete_segments * self.segment_length:]
+                last_segment_mean = last_segment_data.mean(dim=0, keepdim=True)  # (1, n_params)
+                segment_means = torch.cat([segment_means_complete, last_segment_mean], dim=0)
+            else:
+                segment_means = segment_means_complete
         
         # Inverse sigmoid transformation: coeff = -log((b1 / (x - b0)) - 1)
         coefficients = -torch.log((self.b1 / (segment_means - self.b0)) - 1)
@@ -517,7 +536,7 @@ class BoundedBSplineBasis:
             # Inverse sigmoid
             unbounded = -torch.log((self.b1 / (constant_value - self.b0)) - 1)
             # Expand to all time points, then fit
-            unbounded_expanded = unbounded.unsqueeze(0).repeat(self.n_time, 1)
+            unbounded_expanded = unbounded.unsqueeze(0).expand(self.n_time, -1)
             coefficients = self.bspline.fit_coefficients(unbounded_expanded)
             return coefficients.flatten()
         
@@ -678,7 +697,7 @@ class BoundedLowFrequencyBasis:
             # Inverse sigmoid
             unbounded = -torch.log((self.b1 / (constant_value - self.b0)) - 1)
             # Expand to all time points, then fit
-            unbounded_expanded = unbounded.unsqueeze(0).repeat(self.n_time, 1)
+            unbounded_expanded = unbounded.unsqueeze(0).expand(self.n_time, -1)
             coefficients = torch.linalg.lstsq(self.dct_basis, unbounded_expanded).solution
             return coefficients.flatten()
         
