@@ -785,16 +785,43 @@ def generate_synthetic_fmcg_recording(
         fetal_moment_target *= fetal_variation
         maternal_moment_target *= maternal_variation
     
-    # Extract and process maternal signal
-    maternal_signal = maternal_vcg[sampfrom_idx:sampto_idx]
-    n_samples = len(maternal_signal)
+    # Calculate required samples
+    n_samples = sampto_idx - sampfrom_idx
 
-    # Extract and resample fetal signal (different heart rate)
+    # Extract and process maternal signal (with tiling if needed)
+    maternal_available = len(maternal_vcg) - sampfrom_idx
+    if n_samples <= maternal_available:
+        # Enough samples available
+        maternal_signal = maternal_vcg[sampfrom_idx:sampto_idx]
+    else:
+        # Need to tile VCG to reach desired duration
+        print(f"  ⚠ Maternal VCG tiling: need {n_samples} samples, only {maternal_available} available")
+        maternal_usable = maternal_vcg[sampfrom_idx:]  # All available from start point
+        n_repeats = int(np.ceil(n_samples / len(maternal_usable)))
+        maternal_tiled = np.tile(maternal_usable, (n_repeats, 1))
+        maternal_signal = maternal_tiled[:n_samples]
+        print(f"    → Tiled {n_repeats} times to reach {len(maternal_signal)} samples")
+
+    # Extract and resample fetal signal (different heart rate, with tiling if needed)
     fetal_start_idx = sampfrom_idx + fetal_offset_idx
     original_fetal_samples_needed = int(n_samples / fetal_downsample_factor)
-    fetal_signal = fetal_vcg[
-        fetal_start_idx : fetal_start_idx + original_fetal_samples_needed
-    ]
+    fetal_available = len(fetal_vcg) - fetal_start_idx
+
+    if original_fetal_samples_needed <= fetal_available:
+        # Enough samples available
+        fetal_signal = fetal_vcg[
+            fetal_start_idx : fetal_start_idx + original_fetal_samples_needed
+        ]
+    else:
+        # Need to tile VCG to reach desired duration
+        print(f"  ⚠ Fetal VCG tiling: need {original_fetal_samples_needed} samples, only {fetal_available} available")
+        fetal_usable = fetal_vcg[fetal_start_idx:]  # All available from start point
+        n_repeats = int(np.ceil(original_fetal_samples_needed / len(fetal_usable)))
+        fetal_tiled = np.tile(fetal_usable, (n_repeats, 1))
+        fetal_signal = fetal_tiled[:original_fetal_samples_needed]
+        print(f"    → Tiled {n_repeats} times to reach {len(fetal_signal)} samples")
+
+    # Resample fetal signal to match output length
     fetal_signal = resample(fetal_signal, n_samples, axis=0)
     
     # Compute peak magnitude of VCG signals for scaling (corresponds to R-peak)
