@@ -150,6 +150,7 @@ def _process_dipole_data(
         tol=config["post_processing"]["averaging"]["tol"],
         nlms=config["post_processing"].get("nlms", False),
         verbose=False,
+        seed=config.get("seed", None),
     )
     
     if artifacts_mask is not None and "fetal" in data_dict and "maternal" in data_dict:

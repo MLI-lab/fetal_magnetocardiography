@@ -38,6 +38,7 @@ def detect_heartbeats(
     mu=0.001,
     nlms=False,
     consider_mean=False,
+    seed=None,
     **kwargs,
 ):
     """
@@ -206,7 +207,8 @@ def detect_heartbeats(
             log_dict=log_dict,
             n_trials=n_trials,
             ica_components=ica_components,
-            consider_mean=True
+            consider_mean=True,
+            seed=seed,
         )
     elif method == "subsequent_LMS":
         result = decompose_and_LMS(
@@ -220,6 +222,7 @@ def detect_heartbeats(
             verbose=verbose,
             nlms=nlms,
             consider_mean=consider_mean,
+            seed=seed,
         )
     elif method == "lsap":
         comp = decompose_and_match_components(
@@ -766,15 +769,19 @@ def _ica(
     consider_mean=True,
     plot=False,
     log_dict=None,
+    seed=None,
 ):
     best_components = None
     best_ibi_std = np.ones(n_components) * np.inf
     if consider_mean:
         best_ibi_mean = np.ones(n_components) * np.inf
 
+    # Create seeded RNG if seed provided, otherwise use global numpy random state
+    rng = np.random.RandomState(seed) if seed is not None else np.random
+
     for _ in range(n_trials):  # Perform decomposition n_trials times
         fastica = FastICA(
-            n_components=n_components, random_state=np.random.randint(0, 10000)
+            n_components=n_components, random_state=rng.randint(0, 10000)
         )
         components = fastica.fit_transform(result[key][in_key])
 
@@ -894,6 +901,7 @@ def decompose_and_LMS(
     verbose=True,
     nlms=False,
     consider_mean=False,
+    seed=None,
 ):
 
     def _apply_lms_filter(d, x, mu, plot=False, n=9):
@@ -946,6 +954,7 @@ def decompose_and_LMS(
         plot=plot,
         log_dict=log_dict,
         consider_mean=consider_mean,
+        seed=seed,
     )
 
     result["fetal"]["dipole_moments"] = _apply_lms_filter(
@@ -962,6 +971,7 @@ def decompose_and_LMS(
         in_key="dipole_moments",
         n_components=n_components,
         n_trials=n_trials,
+        seed=seed,
         plot=plot,
         log_dict=log_dict,
         consider_mean=consider_mean,
@@ -991,6 +1001,7 @@ def decompose_subsequently(
     n_trials=1,
     ica_components=3,
     consider_mean=True,
+    seed=None,
 ):
     """
     Decomposes the dipole moments subsequently using the specified method.
@@ -1036,6 +1047,7 @@ def decompose_subsequently(
                 plot=plot,
                 log_dict=log_dict,
                 consider_mean=consider_mean,
+                seed=seed,
             )
 
     elif method == "pca":
