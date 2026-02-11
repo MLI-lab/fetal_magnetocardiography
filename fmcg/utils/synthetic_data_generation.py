@@ -611,6 +611,7 @@ def generate_synthetic_fmcg_recording(
     noise_type='gaussian',
     noise_data=None,
     fs_noise=None,
+    gaussian_noise_fraction=None,  # If set, adds Gaussian noise = fraction * RMS(field_clean) on top of snr_db noise
     # Sensor axis mask
     axis_mask=None,
     # Output
@@ -922,6 +923,18 @@ def generate_synthetic_fmcg_recording(
             seed=rng.integers(0, 2**31) if seed is not None else None,
         )
 
+    # Add Gaussian noise relative to clean signal (independent of real noise level)
+    # Reference: P99 of |field_clean| tracks R-peak amplitude scale, so fraction=0.05
+    # means sigma = 5% of a representative peak — more intuitive than RMS for cardiac signals.
+    if gaussian_noise_fraction is not None:
+        reference_amplitude = np.percentile(np.abs(field_clean), 99)
+        sigma = gaussian_noise_fraction * reference_amplitude
+        gaussian_seed = rng.integers(0, 2**31) if seed is not None else None
+        gaussian_rng = np.random.default_rng(gaussian_seed)
+        gaussian_noise = gaussian_rng.normal(0, sigma, field_measured.shape)
+        field_measured = field_measured + gaussian_noise
+        print(f"Added Gaussian noise: fraction={gaussian_noise_fraction}, ref_p99={reference_amplitude:.4e}, std={sigma:.4e}")
+
     # Prepare output
     data = {
         'field_measured': field_measured,
@@ -940,6 +953,7 @@ def generate_synthetic_fmcg_recording(
             'movement_type': movement_type if enable_movement else 'static',
             'snr_db': snr_db,
             'noise_type': noise_type,
+            'gaussian_noise_fraction': gaussian_noise_fraction,
             'seed': seed,
             'duration': n_samples / fs,
             'n_samples': n_samples,
