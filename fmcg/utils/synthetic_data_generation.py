@@ -108,10 +108,15 @@ def add_aligned_noise(
                 f"Sensor dimensions mismatch: noise {noise_data.shape[1:]} vs field {field_data.shape[1:]}"
             )
 
-        # Truncate to match lengths
-        min_length = min(field_data.shape[0], noise_data.shape[0])
-        field_data_trunc = field_data[:min_length].copy()
-        noise_data_trunc = noise_data[:min_length].copy()
+        # If noise is shorter than field, tile it to cover the full length.
+        # If field is shorter, truncate noise to match.
+        n_field = field_data.shape[0]
+        n_noise = noise_data.shape[0]
+        if n_noise < n_field:
+            repeats = (n_field // n_noise) + 1
+            noise_data = np.tile(noise_data, (repeats, 1, 1))[:n_field]
+        field_data_trunc = field_data.copy()
+        noise_data_trunc = noise_data[:n_field].copy()
 
         # Add noise
         noisy_field = add_noise_to_field(
@@ -606,6 +611,8 @@ def generate_synthetic_fmcg_recording(
     noise_type='gaussian',
     noise_data=None,
     fs_noise=None,
+    # Sensor axis mask
+    axis_mask=None,
     # Output
     seed=None,
     return_clean=False,
@@ -685,6 +692,13 @@ def generate_synthetic_fmcg_recording(
         Recorded noise for noise_type='recording'
     fs_noise : float or None
         Sampling frequency of noise_data
+    axis_mask : ndarray or None
+        (n_sensors, 3) boolean/int array; 1/True = observed axis, 0/False = unobserved.
+        When provided, unobserved channels are set to NaN in field_clean *before* noise
+        addition so that sig_power() uses the same observed channels for both signal and
+        noise, yielding correct SNR scaling. Unobserved channels in field_measured are
+        also NaN, matching real sensor data structure.
+        Typically taken from MeasurementConfig.axis_mask.
     seed : int or None
         Random seed for reproducibility
     return_clean : bool
@@ -880,23 +894,33 @@ def generate_synthetic_fmcg_recording(
     print(f"Computing forward model on {device}...")
     forward_model = ForwardModel(r_sensors, device=device)
     field_clean = forward_model.forward_numpy(m_true, r_true)  # (n_samples, n_sensors, 3)
-    
+
     # With mu0_4pi=0.1 and moments in μA·m², forward model outputs field in pT directly
     # No unit conversion needed
 
-    # Add noise
+    # Apply axis mask: set unobserved channels to NaN so that (a) sig_power() for SNR
+    # scaling uses only the same observed channels as the noise, and (b) field_measured
+    # has NaN on unobserved axes matching real sensor data structure.
+    if axis_mask is not None:
+        valid = np.asarray(axis_mask, dtype=bool)[np.newaxis, :, :]  # (1, n_sensors, 3)
+        field_clean = np.where(valid, field_clean, np.nan)
+
+    # Add noise (snr_db=None → skip noise, field_measured equals field_clean)
     time = np.arange(n_samples) / fs
-    print(f"Adding noise (SNR={snr_db} dB, type={noise_type})...")
-    field_measured = add_aligned_noise(
-        field_data=field_clean,
-        time=time,
-        noise_data=noise_data,
-        fs_field=fs,
-        fs_noise=fs_noise,
-        noise_type=noise_type,
-        snr_db=snr_db,
-        seed=rng.integers(0, 2**31) if seed is not None else None,
-    )
+    if snr_db is None:
+        field_measured = field_clean.copy()
+    else:
+        print(f"Adding noise (SNR={snr_db} dB, type={noise_type})...")
+        field_measured = add_aligned_noise(
+            field_data=field_clean,
+            time=time,
+            noise_data=noise_data,
+            fs_field=fs,
+            fs_noise=fs_noise,
+            noise_type=noise_type,
+            snr_db=snr_db,
+            seed=rng.integers(0, 2**31) if seed is not None else None,
+        )
 
     # Prepare output
     data = {

@@ -96,7 +96,16 @@ class MeasurementConfig:
             The format is {sensor_name: [X_channel, Y_channel, Z_channel]}. Example: {
                 "YP": [None, "cDAQ1Mod1/ai0", "cDAQ1Mod1/ai1"], "C1": [None, "cDAQ1Mod1/ai2", "cDAQ1Mod1/ai3"], ...
                 "NL": ["Dev1/ai1", "Dev1/ai2", "Dev1/ai3"]
+
+        axis_mask (ndarray): (n_sensors, 3) int array indicating which field components are
+            physically observed. 1 = observed, 0 = unobserved (channel not connected).
+            Row order matches quspin_positions (row-major, top-left to bottom-right).
+            Derived from quspin_mapping: None entries → 0, connected entries → 1.
     """
+
+    # Which field components are observed per sensor; 1 = observed, 0 = unobserved.
+    # Row order matches quspin_positions (row-major). Mirrors None entries in quspin_mapping.
+    axis_mask = axis_mask
 
     # The position of the sensors in the holder (4x4 grid) ordering 1-16
     quspin_positions = [
