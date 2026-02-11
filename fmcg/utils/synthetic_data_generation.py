@@ -927,7 +927,7 @@ def generate_synthetic_fmcg_recording(
     # Reference: P99 of |field_clean| tracks R-peak amplitude scale, so fraction=0.05
     # means sigma = 5% of a representative peak — more intuitive than RMS for cardiac signals.
     if gaussian_noise_fraction is not None:
-        reference_amplitude = np.percentile(np.abs(field_clean), 99)
+        reference_amplitude = np.nanpercentile(np.abs(field_clean), 99)
         sigma = gaussian_noise_fraction * reference_amplitude
         gaussian_seed = rng.integers(0, 2**31) if seed is not None else None
         gaussian_rng = np.random.default_rng(gaussian_seed)

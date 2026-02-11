@@ -306,9 +306,9 @@ def remove_outlier_dict(
 
     if not all_valid_diffs_low:
         logger.warning("No channels passed physical range threshold.")
-        return sensor_dict, {
-            k: np.zeros(v.shape[1], dtype=bool) for k, v in sensor_dict.items()
-        }
+        return sensor_dict, np.zeros(
+            (len(sensor_dict), next(iter(sensor_dict.values())).shape[1]), dtype=bool
+        )
 
     global_threshold_low = np.nanmedian(np.concatenate(all_valid_diffs_low))
     global_threshold_up = np.nanmedian(np.concatenate(all_valid_diffs_up))
