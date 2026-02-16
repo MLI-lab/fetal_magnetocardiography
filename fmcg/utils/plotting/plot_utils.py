@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 COORDINATE_IMAGE = os.path.join(os.path.dirname(__file__), "coordinates.png")
 
 
-def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]"):
+def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]", preprocess=False, preprocess_method="vg"):
     if time is None:
         if fs is None:
             raise ValueError("Either time or fs must be provided.")
@@ -24,7 +24,32 @@ def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55
     fig, ax = plt.subplots(2, 1, sharex=True, figsize=(7.11, 3))
 
     # Plot the first component of m_hat
-    ax[0].plot(time, m_hat[:, 0])
+    # m_hat[:, 0] may be (T,3) -> three axes
+    y_fetal = m_hat[:, 0]
+    if preprocess:
+        try:
+            import neurokit2 as nk
+        except Exception:
+            raise ImportError("neurokit2 is required for preprocessing but not installed")
+
+        # estimate sampling rate if needed
+        if fs is None:
+            if time is None:
+                raise ValueError("fs must be provided or time must be set to estimate sampling rate for preprocessing")
+            fs_est = int(round(1.0 / np.median(np.diff(time))))
+        else:
+            fs_est = int(fs)
+
+        # apply cleaning per axis if multi-dimensional
+        if y_fetal.ndim == 1:
+            y_fetal = nk.ecg_clean(y_fetal, sampling_rate=fs_est, method=preprocess_method)
+        else:
+            y_clean = np.zeros_like(y_fetal)
+            for j in range(y_fetal.shape[1]):
+                y_clean[:, j] = nk.ecg_clean(y_fetal[:, j], sampling_rate=fs_est, method=preprocess_method)
+            y_fetal = y_clean
+
+    ax[0].plot(time, y_fetal)
     ax[0].set_title("Fetal Magnetic Moment")
     from matplotlib.ticker import MaxNLocator, AutoMinorLocator
 
@@ -36,7 +61,31 @@ def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55
     ax[0].legend(["x", "y", "z"], loc="upper right")
 
     # Plot the second component of m_hat
-    ax[1].plot(time, m_hat[:, 1])
+    # m_hat[:, 1] may be (T,3) -> three axes
+    y_maternal = m_hat[:, 1]
+    if preprocess:
+        # reuse fs_est if available
+        try:
+            import neurokit2 as nk
+        except Exception:
+            raise ImportError("neurokit2 is required for preprocessing but not installed")
+
+        if fs is None:
+            if time is None:
+                raise ValueError("fs must be provided or time must be set to estimate sampling rate for preprocessing")
+            fs_est = int(round(1.0 / np.median(np.diff(time))))
+        else:
+            fs_est = int(fs)
+
+        if y_maternal.ndim == 1:
+            y_maternal = nk.ecg_clean(y_maternal, sampling_rate=fs_est, method=preprocess_method)
+        else:
+            y_clean = np.zeros_like(y_maternal)
+            for j in range(y_maternal.shape[1]):
+                y_clean[:, j] = nk.ecg_clean(y_maternal[:, j], sampling_rate=fs_est, method=preprocess_method)
+            y_maternal = y_clean
+
+    ax[1].plot(time, y_maternal)
     ax[1].set_title("Maternal Magnetic Moment")
     ax[1].grid(True)
     ax[1].minorticks_on()
@@ -55,6 +104,214 @@ def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55
     ax[1].set_xlim(xlim)
     fig.supylabel(ylabel)
 
+    if savename:
+        plt.savefig(
+            savename,
+            bbox_inches="tight",
+            pad_inches=0.01, dpi=fig.dpi,
+        )
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]", preprocess=False, preprocess_method="vg", plot_pca=False, separate_figures=False):
+    """
+    Plot magnetic moments with each axis (x, y, z) in separate subplots.
+    
+    Parameters
+    ----------
+    m_hat : ndarray
+        Magnetic moments with shape (time, 2, 3) where 2 is [fetal, maternal] and 3 is [x, y, z]
+    time : ndarray, optional
+        Time array. If None, will be computed from fs
+    fs : float, optional
+        Sampling frequency. Required if time is None
+    savename : str, optional
+        Path to save the figure. If None, figure is displayed
+    xlim : list, optional
+        X-axis limits [start, end] in seconds
+    ylabel : str, optional
+        Y-axis label
+    """
+    if time is None:
+        if fs is None:
+            raise ValueError("Either time or fs must be provided.")
+        time = np.arange(m_hat.shape[0]) / fs
+
+    from matplotlib.ticker import MaxNLocator, AutoMinorLocator
+    
+    axis_names = ['x', 'y', 'z']
+    colors = ['tab:blue', 'tab:orange', 'tab:green']
+
+    # helper to preprocess and (optionally) compute PCA1
+    def _prepare_source(col_idx):
+        Y = m_hat[:, col_idx, :].astype(float)
+        # preprocess each axis if requested
+        if preprocess:
+            try:
+                import neurokit2 as nk
+            except Exception:
+                raise ImportError("neurokit2 is required for preprocessing but not installed")
+
+            if fs is None:
+                if time is None:
+                    raise ValueError("fs must be provided or time must be set to estimate sampling rate for preprocessing")
+                fs_est = int(round(1.0 / np.median(np.diff(time))))
+            else:
+                fs_est = int(fs)
+
+            Yc = np.zeros_like(Y)
+            for j in range(Y.shape[1]):
+                Yc[:, j] = nk.ecg_clean(Y[:, j], sampling_rate=fs_est, method=preprocess_method)
+            Y = Yc
+
+        pca1 = None
+        if plot_pca:
+            # mean-center and take first principal component via SVD
+            Yc = Y - np.mean(Y, axis=0)
+            try:
+                U, S, Vt = np.linalg.svd(Yc, full_matrices=False)
+                pca1 = Yc @ Vt.T[:, 0]
+            except Exception:
+                pca1 = None
+
+        return Y, pca1
+
+    # If splitting into two separate figures
+    if separate_figures:
+        # fetal
+        Y_f, pca_f = _prepare_source(0)
+        nrows = 3
+        fig_f, axes_f = plt.subplots(nrows, 1, sharex=True, figsize=(7.11, 1 * nrows))
+        if nrows == 1:
+            axes_f = [axes_f]
+        for i in range(3):
+            ax = axes_f[i]
+            ax.plot(time, Y_f[:, i], color=colors[i], label=f"{axis_names[i]}")
+            # overlay PCA (scaled to axis)
+            if plot_pca and pca_f is not None:
+                p = pca_f
+                # scale PCA to match axis std
+                p_scaled = (p - np.mean(p)) / (np.std(p) + 1e-12) * (np.std(Y_f[:, i]) + 0) + np.mean(Y_f[:, i])
+                ax.plot(time, p_scaled, color='k', linestyle='--', label='PCA1')
+            ax.grid(True, which='minor', linestyle=':', linewidth=0.7)
+            ax.minorticks_on()
+            ax.grid(True)
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+            ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+            ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+            ax.set_xlim(xlim)
+            ax.legend(loc='upper right')
+
+        fig_f.supylabel("Fetal " + ylabel)
+        axes_f[-1].set_xlabel('Time [s]')
+        plt.tight_layout()
+        if savename:
+            base, ext = os.path.splitext(savename)
+            sav_f = f"{base}_fetal{ext}"
+            plt.savefig(sav_f, bbox_inches='tight', pad_inches=0.01, dpi=fig_f.dpi)
+            plt.close(fig_f)
+        else:
+            plt.show()
+
+        # maternal
+        Y_m, pca_m = _prepare_source(1)
+        fig_m, axes_m = plt.subplots(nrows, 1, sharex=True, figsize=(7.11, 1* nrows))
+        if nrows == 1:
+            axes_m = [axes_m]
+        for i in range(3):
+            ax = axes_m[i]
+            ax.plot(time, Y_m[:, i], color=colors[i], label=f"{axis_names[i]}")
+            if plot_pca and pca_m is not None:
+                p = pca_m
+                p_scaled = (p - np.mean(p)) / (np.std(p) + 1e-12) * (np.std(Y_m[:, i]) + 0) + np.mean(Y_m[:, i])
+                ax.plot(time, p_scaled, color='k', linestyle='--', label='PCA1')
+            ax.grid(True, which='minor', linestyle=':', linewidth=0.7)
+            ax.minorticks_on()
+            ax.grid(True)
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+            ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+            ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+            ax.set_xlim(xlim)
+            ax.legend(loc='upper right')
+
+        fig_m.supylabel("Maternal " + ylabel)
+        axes_m[-1].set_xlabel('Time [s]')
+        plt.tight_layout()
+        if savename:
+            base, ext = os.path.splitext(savename)
+            sav_m = f"{base}_maternal{ext}"
+            plt.savefig(sav_m, bbox_inches='tight', pad_inches=0.01, dpi=fig_m.dpi)
+            plt.close(fig_m)
+        else:
+            plt.show()
+        return
+
+    # default: single figure with fetal axes stacked then maternal axes
+    # build combined arrays
+    Y_f, pca_f = _prepare_source(0)
+    Y_m, pca_m = _prepare_source(1)
+
+    n_f = 3 + (1 if plot_pca else 0)
+    n_m = 3 + (1 if plot_pca else 0)
+    total_rows = n_f + n_m
+    fig, axes = plt.subplots(total_rows, 1, sharex=True, figsize=(7.11, 2.5 * total_rows))
+    if total_rows == 1:
+        axes = [axes]
+
+    plot_idx = 0
+    # plot fetal
+    for i in range(3):
+        ax = axes[plot_idx]
+        ax.plot(time, Y_f[:, i], color=colors[i])
+        ax.set_title(f"Fetal {axis_names[i]}")
+        ax.grid(True, which='minor', linestyle=':', linewidth=0.7)
+        ax.minorticks_on()
+        ax.grid(True)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+        ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+        ax.set_xlim(xlim)
+        plot_idx += 1
+    if plot_pca and pca_f is not None:
+        ax = axes[plot_idx]
+        ax.plot(time, pca_f, color='k')
+        ax.set_title('Fetal PCA1')
+        ax.grid(True)
+        ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+        ax.set_xlim(xlim)
+        plot_idx += 1
+
+    # plot maternal
+    for i in range(3):
+        ax = axes[plot_idx]
+        ax.plot(time, Y_m[:, i], color=colors[i])
+        ax.set_title(f"Maternal {axis_names[i]}")
+        ax.grid(True, which='minor', linestyle=':', linewidth=0.7)
+        ax.minorticks_on()
+        ax.grid(True)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+        ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+        ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+        ax.set_xlim(xlim)
+        plot_idx += 1
+    if plot_pca and pca_m is not None:
+        ax = axes[plot_idx]
+        ax.plot(time, pca_m, color='k')
+        ax.set_title('Maternal PCA1')
+        ax.grid(True)
+        ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+        ax.set_xlim(xlim)
+
+    # Set x-axis label for bottom row
+    axes[-1].set_xlabel("Time [s]")
+    
+    # Set y-axis label
+    fig.supylabel(ylabel)
+    
+    plt.tight_layout()
+    
     if savename:
         plt.savefig(
             savename,
