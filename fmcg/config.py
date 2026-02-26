@@ -53,17 +53,19 @@ class PreprocessingConfig:
         downsample_factor: Downsampling factor
         process_segments: Enable segmented processing
         min_segment_length: Minimum segment length in seconds
+        detect_artifacts: Whether to perform artifact detection and removal
     """
     whitening: Optional[str] = "PCA"
     rescale_whitening: bool = True
     bandpass_low: float = 1.0
     bandpass_high: float = 40.0
     bandpass_order: int = 4
-    signal_threshold: float = 2.0
+    signal_threshold: float = 1.0
     noise_threshold: float = 0.1
-    downsample_factor: int = 2
+    downsample_factor: int = 4
     process_segments: bool = True
     min_segment_length: float = 10.0
+    detect_artifacts: bool = True
 
 
 @dataclass
@@ -81,7 +83,7 @@ class LearningRateConfig:
         min_iter: Minimum iterations before early stopping
         cooldown_iterations: Cooldown iterations after LR reduction
     """
-    niter: int = 500
+    niter: int = 750
     warmup: int = 50
     lr_groups: List[float] = field(default_factory=lambda: [1e-1, 1e-1, 1e-2])
     patience_groups: List[int] = field(default_factory=lambda: [20])
