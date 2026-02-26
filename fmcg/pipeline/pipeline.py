@@ -46,6 +46,7 @@ from ._pipeline_utils import (
     _process_segment_worker,
     _process_segment_worker_threaded,
     _handle_segment_result,
+    _compute_hrv_quality_metrics,
 )
 
 
@@ -223,6 +224,10 @@ class Pipeline:
         for k in self.heartbeats_dict.keys():
             if self.log_dict and f"selected_beats_{k}" in self.log_dict and f"selected_hr_{k}" in self.log_dict:
                 logger.info(f"Found {k} {self.log_dict[f'selected_beats_{k}']:.2f} heartbeats with mean HR {self.log_dict[f'selected_hr_{k}']:.2f} bpm")
+
+        # Compute HRV quality metrics (sdnn_ms, rmssd, outlier_rate, num_valid_peaks)
+        for comp in self.data_dict:
+            self.log_dict.update(_compute_hrv_quality_metrics(self.data_dict, comp, self.fs_, self.config))
 
         # Compute goodness-of-fit metrics (reconstruction quality, residual stats, discrepancy)
         self._compute_gof_metrics()
@@ -1079,6 +1084,10 @@ class Pipeline:
             for component_name in self.heartbeats_dict.keys():
                 if self.log_dict and f"selected_beats_{component_name}" in self.log_dict and f"selected_hr_{component_name}" in self.log_dict:
                     logger.info(f"Selected {component_name} {self.log_dict[f'selected_beats_{component_name}']:.2f} heartbeats with mean HR {self.log_dict[f'selected_hr_{component_name}']:.2f} bpm")
+
+            # Compute HRV quality metrics (sdnn_ms, rmssd, outlier_rate, num_valid_peaks)
+            for comp in self.data_dict:
+                self.log_dict.update(_compute_hrv_quality_metrics(self.data_dict, comp, self.fs_, self.config))
 
             # Compute GOF metrics per segment; store as lists (one entry per segment) in log_dict
             gof_lists = {}

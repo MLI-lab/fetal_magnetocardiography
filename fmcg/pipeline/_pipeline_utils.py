@@ -359,3 +359,81 @@ def _process_segment_worker_threaded(
         logger.error(f"Error processing segment {segment_idx}: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return None
+
+
+def _compute_hrv_quality_metrics(data_dict, component, fs, config):
+    """Compute HRV quality metrics for one component from final detected peaks.
+
+    Reports raw (all peaks) and clean (outlier-filtered) variants of sdnn and rmssd.
+    An IBI is considered clean if neither of its two bounding peaks is flagged by
+    detect_hr_outlier. Outlier detection parameters are read from
+    config["post_processing"]["averaging"]["outlier_kwargs"], matching the settings
+    used during heartbeat processing.
+
+    Returns a dict with keys:
+        sdnn_{component}            std of NN intervals (ms, all peaks)
+        sdnn_clean_{component}      std of NN intervals (ms, non-outlier IBIs only)
+        rmssd_{component}           sqrt(mean(successive NN diffs^2)) (ms, all peaks)
+        rmssd_clean_{component}     sqrt(mean(successive NN diffs^2)) (ms, valid IBIs only)
+        outlier_rate_{component}    fraction of peaks flagged as HR outliers
+        num_valid_peaks_{component} count of non-outlier peaks
+    """
+    suffix = f"_{component}"
+    nan_result = {
+        f"sdnn{suffix}": float("nan"),
+        f"sdnn_clean{suffix}": float("nan"),
+        f"rmssd{suffix}": float("nan"),
+        f"rmssd_clean{suffix}": float("nan"),
+        f"outlier_rate{suffix}": float("nan"),
+        f"num_valid_peaks{suffix}": 0,
+    }
+
+    try:
+        comp_data = data_dict.get(component, {})
+        peaks = comp_data.get("peaks", None)
+        if peaks is None or len(peaks) < 3:
+            return nan_result
+
+        outlier_kwargs = config["post_processing"]["averaging"].get(
+            "outlier_kwargs", {"win": 4, "threshold": 10}
+        )
+
+        ibi_ms = np.diff(peaks) / fs * 1000  # inter-beat intervals in ms, length N-1
+
+        # --- Raw metrics (all peaks) ---
+        sdnn = float(np.std(ibi_ms))
+        rmssd = float(np.sqrt(np.mean(np.diff(ibi_ms) ** 2)))
+
+        # --- Outlier detection (same parameters as heartbeat processing) ---
+        outlier = heartbeats.detect_hr_outlier(
+            peaks, fs,
+            win=outlier_kwargs.get("win", 4),
+            threshold=outlier_kwargs.get("threshold", 10),
+            plot=False,
+        )
+        outlier_rate = float(np.mean(outlier)) if len(outlier) > 0 else float("nan")
+        num_valid_peaks = int(np.sum(~outlier))
+
+        # --- Clean metrics (IBIs where both bounding peaks are non-outliers) ---
+        valid_ibi_mask = ~outlier[:-1] & ~outlier[1:]  # length N-1
+        valid_ibis = ibi_ms[valid_ibi_mask]
+
+        sdnn_clean = float(np.std(valid_ibis)) if len(valid_ibis) > 1 else float("nan")
+        rmssd_clean = (
+            float(np.sqrt(np.mean(np.diff(valid_ibis) ** 2)))
+            if len(valid_ibis) > 2
+            else float("nan")
+        )
+
+        return {
+            f"sdnn{suffix}": round(sdnn, 2),
+            f"sdnn_clean{suffix}": round(sdnn_clean, 2) if not np.isnan(sdnn_clean) else float("nan"),
+            f"rmssd{suffix}": round(rmssd, 2),
+            f"rmssd_clean{suffix}": round(rmssd_clean, 2) if not np.isnan(rmssd_clean) else float("nan"),
+            f"outlier_rate{suffix}": round(outlier_rate, 4),
+            f"num_valid_peaks{suffix}": num_valid_peaks,
+        }
+
+    except Exception as e:
+        logger.warning(f"HRV quality metrics failed for {component}: {e}")
+        return nan_result

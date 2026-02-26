@@ -837,9 +837,6 @@ def _ica(
             plt.tight_layout()
             plt.show()
 
-    if log_dict is not None:
-        log_dict[f"sdnn_{key}"] = np.round(best_ibi_std, 4)
-
     if key is not None:
         logger.info(f"{key.capitalize()} - Best IBI Std: {best_ibi_std}")
 
