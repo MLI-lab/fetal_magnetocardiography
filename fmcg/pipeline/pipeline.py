@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import scipy
 import scipy.signal
+import scipy.stats
 import torch
 import neurokit2 as nk
 import dataclasses
@@ -30,6 +31,7 @@ from fmcg.signal.whitening import apply_whitening
 from fmcg.signal.artifact_removal import detect_artifacts
 from fmcg.signal.filtering import filter_sensor_dict
 from fmcg.signal.artifact_removal import remove_outlier_dict
+from ..fitting.field_model import ForwardModel
 
 
 from ._pipeline_utils import (
@@ -222,6 +224,9 @@ class Pipeline:
             if self.log_dict and f"selected_beats_{k}" in self.log_dict and f"selected_hr_{k}" in self.log_dict:
                 logger.info(f"Found {k} {self.log_dict[f'selected_beats_{k}']:.2f} heartbeats with mean HR {self.log_dict[f'selected_hr_{k}']:.2f} bpm")
 
+        # Compute goodness-of-fit metrics (reconstruction quality, residual stats, discrepancy)
+        self._compute_gof_metrics()
+
         # Save data if required - unified pickle file format
         if self.save_data:
             save_dict = {
@@ -240,6 +245,107 @@ class Pipeline:
         _plot_averaged_beats_if_enabled(
             self.heartbeats_dict, self.save_plots, self.output_dir
         )
+
+    def _compute_gof_metrics_for(self, field_windowed, m_hat, r_hat):
+        """Compute GOF metrics for one field/m_hat/r_hat triplet.
+
+        Returns a dict of scalar metrics, or an empty dict if computation is not possible.
+        All metrics are computed in the whitened domain.
+        """
+        r_sensors = data.generate_array_coordinates(
+            grid_shape=(4, 4), grid_spacing=0.04, y=0
+        )
+        fm = ForwardModel(r_sensors=r_sensors, device="cpu")
+
+        if field_windowed.shape[0] != m_hat.shape[0]:
+            logger.warning(
+                f"GOF metrics skipped: field length ({field_windowed.shape[0]}) "
+                f"!= m_hat length ({m_hat.shape[0]})"
+            )
+            return {}
+
+        # Valid timepoints: no NaN in dipole solution
+        valid_t = ~np.isnan(m_hat.reshape(len(m_hat), -1)).any(axis=1)
+        if valid_t.sum() < 10:
+            logger.warning("GOF metrics skipped: fewer than 10 valid timepoints")
+            return {}
+
+        m_valid = m_hat[valid_t]
+        r_valid = r_hat[valid_t]
+        field_valid = field_windowed[valid_t]
+
+        # Forward model prediction in physical units
+        r_tensor = torch.tensor(r_valid, dtype=torch.float32)
+        m_tensor = torch.tensor(m_valid, dtype=torch.float32)
+        field_pred_phys = fm.forward_linear(r_tensor, m_tensor, as_numpy=True, silent=True)
+        # field_pred_phys: (T_valid, S, 3)
+
+        # Extract valid channels
+        valid_ch_mask = self.axis_mask == 1          # (S, 3) bool
+        field_meas_w = field_valid[:, valid_ch_mask]  # (T_valid, n_valid)
+        field_pred_ch = field_pred_phys[:, valid_ch_mask]  # (T_valid, n_valid)
+
+        # Apply whitening to prediction to match the measured whitened field
+        if self.W is not None:
+            field_pred_w = field_pred_ch @ self.W.T
+        else:
+            field_pred_w = field_pred_ch
+
+        # Remove channels with NaN in the measured field
+        valid_ch = ~np.isnan(field_meas_w).any(axis=0)
+        field_meas_w = field_meas_w[:, valid_ch]
+        field_pred_w = field_pred_w[:, valid_ch]
+
+        residual = field_meas_w - field_pred_w  # (T_valid, n_ch)
+
+        # --- Group 1: Reconstruction quality ---
+        norm_res = np.linalg.norm(residual)
+        norm_meas = np.linalg.norm(field_meas_w)
+        relative_error = norm_res / (norm_meas + 1e-12)
+        r_squared = 1.0 - relative_error ** 2
+        srr_db = 20.0 * np.log10(np.linalg.norm(field_pred_w) / (norm_res + 1e-12))
+
+        # --- Group 2: Residual distribution statistics ---
+        res_flat = residual.ravel()
+        metrics = {
+            "recon_r_squared": round(float(r_squared), 4),
+            "recon_relative_error_pct": round(float(relative_error * 100), 4),
+            "recon_srr_db": round(float(srr_db), 4),
+            "recon_rms_residual": round(float(np.sqrt(np.mean(residual ** 2))), 6),
+            "residual_mean": round(float(np.mean(res_flat)), 6),
+            "residual_std": round(float(np.std(res_flat)), 6),
+            "residual_skewness": round(float(scipy.stats.skew(res_flat)), 4),
+            "residual_kurtosis": round(float(scipy.stats.kurtosis(res_flat)), 4),
+        }
+
+        # --- Group 3: Discrepancy threshold (whitened domain) ---
+        if self.noise_whitened is not None:
+            noise_w = self.noise_whitened[:, valid_ch]  # (T_noise, n_ch)
+            noise_norm_sq = np.sum(noise_w ** 2, axis=1)
+            field_norm_sq = np.sum(field_meas_w ** 2, axis=1)
+            residual_norm_sq = np.sum(residual ** 2, axis=1)
+            discrepancy_threshold = 0.5 * np.mean(noise_norm_sq) / (np.mean(field_norm_sq) + 1e-12)
+            data_fit = 0.5 * np.mean(residual_norm_sq) / (np.mean(field_norm_sq) + 1e-12)
+            metrics.update({
+                "discrepancy_threshold": round(float(discrepancy_threshold), 6),
+                "data_fit": round(float(data_fit), 6),
+                "fit_within_noise": int(data_fit < discrepancy_threshold),
+            })
+
+        return metrics
+
+    def _compute_gof_metrics(self):
+        """Non-segmented path: compute GOF on the full window, store scalars to self.log_dict."""
+        metrics = self._compute_gof_metrics_for(
+            self.field_maps_windowed, self.m_hat, self.r_hat
+        )
+        if metrics:
+            self.log_dict.update(metrics)
+            logger.info(
+                f"GOF: R²={metrics['recon_r_squared']}, "
+                f"SRR={metrics['recon_srr_db']} dB, "
+                f"residual_std={metrics['residual_std']}"
+            )
 
     def _initialize_output_directory(self):
         # Create output directory if it does not exist
@@ -463,9 +569,14 @@ class Pipeline:
                 return_whitening_matrix=True,
                 rescale=rescale_whitening,
             )
+            # Store whitened noise for GOF discrepancy threshold
+            noise_valid = noise_maps[:, self.axis_mask == 1].copy()
+            noise_valid -= np.nanmean(noise_valid, axis=0)
+            self.noise_whitened = noise_valid @ self.W.T
         else:
             self.field_maps = field_maps
             self.W = None
+            self.noise_whitened = None
 
         field_maps[~artifacts_mask] = self.field_maps
         self.field_maps = field_maps
@@ -968,6 +1079,26 @@ class Pipeline:
                 if self.log_dict and f"selected_beats_{component_name}" in self.log_dict and f"selected_hr_{component_name}" in self.log_dict:
                     logger.info(f"Selected {component_name} {self.log_dict[f'selected_beats_{component_name}']:.2f} heartbeats with mean HR {self.log_dict[f'selected_hr_{component_name}']:.2f} bpm")
 
+            # Compute GOF metrics per segment; store as lists (one entry per segment) in log_dict
+            gof_lists = {}
+            for result in self.segment_results:
+                if result is not None and "m_hat" in result:
+                    seg_idx = result["segment_idx"]
+                    start, end = self.processing_segments[seg_idx]
+                    field_seg = self.field_maps_windowed[start:end]
+                    seg_metrics = self._compute_gof_metrics_for(
+                        field_seg, result["m_hat"], result["r_hat"]
+                    )
+                    for k, v in seg_metrics.items():
+                        gof_lists.setdefault(k, []).append(v)
+            if gof_lists:
+                self.log_dict.update(gof_lists)
+                logger.info(
+                    f"GOF segments ({len(self.segment_results)}): "
+                    f"R²={gof_lists.get('recon_r_squared', [])}, "
+                    f"fit_within_noise={gof_lists.get('fit_within_noise', [])}"
+                )
+
             # Additional saving for segmented processing
             if self.save_data:
                 # # Save individual segment results (simplified for pickling)
@@ -1321,6 +1452,7 @@ class Pipeline:
         self.fs = None
         self.sig_power = None
         self.noise_power = None  #
+        self.noise_whitened = None
         self.sensor_dict = {}
 
 
