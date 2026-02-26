@@ -557,7 +557,7 @@ class Pipeline:
 
         # whitening
         whitening_method = self.config["preprocessing"].get("whitening")
-        if whitening_method is not None:
+        if whitening_method:  # Only apply if truthy (not None, False, or empty string)
             logger.info(f"\nApplying {whitening_method} Whitening")
 
             rescale_whitening = self.config["preprocessing"].get("rescale_whitening")
@@ -574,7 +574,8 @@ class Pipeline:
             noise_valid -= np.nanmean(noise_valid, axis=0)
             self.noise_whitened = noise_valid @ self.W.T
         else:
-            self.field_maps = field_maps
+            # No whitening, but still filter out artifacts
+            self.field_maps = field_maps[~artifacts_mask]
             self.W = None
             self.noise_whitened = None
 

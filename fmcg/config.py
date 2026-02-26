@@ -43,7 +43,7 @@ class PreprocessingConfig:
     Configuration for signal preprocessing.
 
     Attributes:
-        whitening: Whitening method ("PCA", "ZCA", or None)
+        whitening: Whitening method ("PCA", "ZCA", or None/False to disable)
         rescale_whitening: Whether to rescale after whitening
         bandpass_low: Low cutoff frequency for bandpass filter (Hz)
         bandpass_high: High cutoff frequency for bandpass filter (Hz)
