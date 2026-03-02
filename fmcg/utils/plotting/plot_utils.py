@@ -115,6 +115,152 @@ def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55
         plt.show()
 
 
+def plot_compare_magnetic_moments(
+    m_hat_list,
+    titles=None,
+    time=None,
+    fs=None,
+    savename=None,
+    xlim=[50, 55],
+    ylabel=r"Magnetic Moment [nAm$^2$]",
+    preprocess=False,
+    preprocess_method="vg",
+):
+    """
+    Compare two `m_hat` estimates side-by-side in a 2x2 grid.
+
+    Parameters
+    ----------
+    m_hat_list : list or tuple
+        Two `m_hat` arrays (each shaped like the original `plot_magnetic_moments` input).
+    titles : list or tuple, optional
+        Two titles for the left/right columns. If None, defaults to ["A", "B"].
+    Other parameters mirror `plot_magnetic_moments`.
+    """
+    if not isinstance(m_hat_list, (list, tuple)) or len(m_hat_list) != 2:
+        raise ValueError("m_hat_list must be a list/tuple of two m_hat arrays")
+
+    if titles is None:
+        titles = ["A", "B"]
+
+    if time is None:
+        if fs is None:
+            raise ValueError("Either time or fs must be provided.")
+        time = np.arange(m_hat_list[0].shape[0]) / fs
+
+    fig, axes = plt.subplots(2, 2, sharex=True, figsize=(7.11, 3), dpi=500)
+    from matplotlib.ticker import MaxNLocator, AutoMinorLocator
+
+    for col, (m_hat, title) in enumerate(zip(m_hat_list, titles)):
+        # fetal
+        y_fetal = m_hat[:, 0]
+        # maternal
+        y_maternal = m_hat[:, 1]
+
+        if preprocess:
+            try:
+                import neurokit2 as nk
+            except Exception:
+                raise ImportError("neurokit2 is required for preprocessing but not installed")
+
+            if fs is None:
+                if time is None:
+                    raise ValueError(
+                        "fs must be provided or time must be set to estimate sampling rate for preprocessing"
+                    )
+                fs_est = int(round(1.0 / np.median(np.diff(time))))
+            else:
+                fs_est = int(fs)
+
+            # fetal clean
+            if y_fetal.ndim == 1:
+                y_fetal = nk.ecg_clean(y_fetal, sampling_rate=fs_est, method=preprocess_method)
+            else:
+                y_clean = np.zeros_like(y_fetal)
+                for j in range(y_fetal.shape[1]):
+                    y_clean[:, j] = nk.ecg_clean(y_fetal[:, j], sampling_rate=fs_est, method=preprocess_method)
+                y_fetal = y_clean
+
+            # maternal clean
+            if y_maternal.ndim == 1:
+                y_maternal = nk.ecg_clean(y_maternal, sampling_rate=fs_est, method=preprocess_method)
+            else:
+                y_clean = np.zeros_like(y_maternal)
+                for j in range(y_maternal.shape[1]):
+                    y_clean[:, j] = nk.ecg_clean(y_maternal[:, j], sampling_rate=fs_est, method=preprocess_method)
+                y_maternal = y_clean
+
+        axf = axes[0, col]
+        axm = axes[1, col]
+
+        # scale to nA (1 uA = 1000 nA)
+        y_fetal_plot = y_fetal * 1e3
+        y_maternal_plot = y_maternal * 1e3
+
+        axf.plot(time, y_fetal_plot)
+        # column title on the top subplot
+        axf.set_title(title)
+        axf.grid(True, which="minor", linestyle=":", linewidth=0.7)
+        axf.minorticks_on()
+        axf.grid(True)
+        axf.yaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
+        axf.yaxis.set_minor_locator(AutoMinorLocator(2))
+        #axf.legend(["x", "y", "z"], loc="upper right")
+        # add boxed label inside the plot (like other plot text usage)
+        bbox_props = dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8, edgecolor="black", linewidth=.5)
+        axf.text(0.03, 0.9, "Fetal", ha="left", va="center", transform=axf.transAxes, bbox=bbox_props, zorder=100, fontsize=10)
+
+        axm.plot(time, y_maternal_plot)
+        # no column title here; use the top subplot for the column title
+        axm.grid(True, which="minor", linestyle=":", linewidth=0.7)
+        axm.minorticks_on()
+        axm.grid(True)
+        axm.yaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
+        axm.yaxis.set_minor_locator(AutoMinorLocator(2))
+        #axm.legend(["x", "y", "z"], loc="upper right")
+        bbox_props = dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8, edgecolor="black", linewidth=.5)
+        axm.text(0.03, 0.9, "Maternal", ha="left", va="center", transform=axm.transAxes, bbox=bbox_props, zorder=100, fontsize=10)
+
+        # x minor ticks for both
+        axm.xaxis.set_minor_locator(AutoMinorLocator(4))
+        axf.xaxis.set_minor_locator(AutoMinorLocator(4))
+
+        # ensure xlim is applied to the bottom row (maternal) for both columns
+        axm.set_xlim(xlim)
+
+    # Share y-limits per row (fetal row 0, maternal row 1)
+    # Row 0: fetal plots
+    fetal_ylims = [axes[0, 0].get_ylim(), axes[0, 1].get_ylim()]
+    fetal_ymin = min(ylim[0] for ylim in fetal_ylims)
+    fetal_ymax = max(ylim[1] for ylim in fetal_ylims)
+    axes[0, 0].set_ylim(fetal_ymin, fetal_ymax)
+    axes[0, 1].set_ylim(fetal_ymin, fetal_ymax)
+    
+    # Row 1: maternal plots
+    maternal_ylims = [axes[1, 0].get_ylim(), axes[1, 1].get_ylim()]
+    maternal_ymin = min(ylim[0] for ylim in maternal_ylims)
+    maternal_ymax = max(ylim[1] for ylim in maternal_ylims)
+    axes[1, 0].set_ylim(maternal_ymin, maternal_ymax)
+    axes[1, 1].set_ylim(maternal_ymin, maternal_ymax)
+
+    # shared x label and y label
+    axes[1, 0].set_xlabel("Time [s]")
+    axes[1, 1].set_xlabel("Time [s]")
+    fig.supylabel(ylabel)
+
+    # create one shared legend for the three axes labels
+    from matplotlib.lines import Line2D
+    legend_handles = [Line2D([0], [0], color=f"C{i}") for i in range(3)]
+    fig.legend(legend_handles, ["x", "y", "z"], ncol=3, loc="upper center", bbox_to_anchor=(0.53, 1.05))
+
+    plt.tight_layout()
+    if savename:
+        plt.savefig(savename, bbox_inches="tight", pad_inches=0.01, dpi=fig.dpi)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
 def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]", preprocess=False, preprocess_method="vg", plot_pca=False, separate_figures=False):
     """
     Plot magnetic moments with each axis (x, y, z) in separate subplots.
