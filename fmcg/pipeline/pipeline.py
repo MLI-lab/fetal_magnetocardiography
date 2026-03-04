@@ -169,7 +169,10 @@ class Pipeline:
         N = data.shape[0]
         r_init = np.repeat(self.config["solver"]["r_init"], N, axis=0)
         
-        mdl = _create_inverse_solver(self.config, N, self.axis_mask, self.W)
+        mdl = _create_inverse_solver(
+            self.config, N, self.axis_mask, self.W,
+            loss_mask=getattr(self, 'loss_mask', None),
+        )
         
         if device:
             y = torch.tensor(data, dtype=torch.float32, device=device)
@@ -1391,6 +1394,7 @@ class Pipeline:
         system_config,
         measurement_config,
         mask=None,
+        loss_mask=None,
         log_note="",
         log_dict={},
         verbose=False,
@@ -1403,7 +1407,11 @@ class Pipeline:
             config: Pipeline configuration (dict or PipelineConfig dataclass)
             system_config: System configuration for measurement device
             measurement_config: Measurement configuration
-            mask: Optional mask to exclude specific sensor axes
+            mask: Optional mask to exclude specific sensor axes (applied before whitening)
+            loss_mask: Optional mask (S, 3) to exclude sensor axes from the solver
+                loss ONLY.  Unlike ``mask``, this does NOT affect preprocessing or
+                whitening.  Useful for cross-validation where the whitening matrix
+                should be shared across folds.
             log_note: Optional note to include in the log record
             log_dict: Optional dictionary for logging additional information
             verbose: If True, enables verbose logging
@@ -1451,6 +1459,7 @@ class Pipeline:
         self.save_data = self.config.get("save_data", False)
         self.output_dir = self.config.get("output_dir", "output")
         self.mask = mask
+        self.loss_mask = loss_mask
         self.log_note = log_note
         self.log_dict = log_dict
         self.data_loader = data_loader  # Store synthetic data loader if provided

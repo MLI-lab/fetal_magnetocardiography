@@ -8,6 +8,7 @@ proper resource cleanup, signal handling, and progress tracking.
 import os
 import signal
 import atexit
+import multiprocessing
 import psutil
 import torch
 import gc
@@ -31,16 +32,20 @@ class MultiGPUExecutor:
         >>> results = executor.run_jobs(jobs, worker_fn)
     """
     
-    def __init__(self, devices: List[str], workers_per_device: int = 1):
+    def __init__(self, devices: List[str], workers_per_device: int = 1, use_spawn: bool = True):
         """Initialize multi-GPU executor.
         
         Args:
             devices: List of GPU device strings (e.g., ["cuda:0", "cuda:1"])
             workers_per_device: Number of parallel workers per GPU
+            use_spawn: Use 'spawn' start method for child processes (default True).
+                Required when CUDA has been initialized in the main process
+                before forking (e.g. a reference Pipeline run).
         """
         self.devices = devices
         self.workers_per_device = workers_per_device
         self.max_workers = len(devices) * workers_per_device
+        self._mp_context = multiprocessing.get_context('spawn') if use_spawn else None
         
         # Global state for cleanup
         self._active_executor = None
@@ -169,7 +174,10 @@ class MultiGPUExecutor:
         failure_count = 0
         
         try:
-            with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            with ProcessPoolExecutor(
+                max_workers=self.max_workers,
+                mp_context=self._mp_context,
+            ) as executor:
                 # Register executor for signal handling
                 self._active_executor = executor
                 

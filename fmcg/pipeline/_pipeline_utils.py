@@ -42,8 +42,24 @@ def _create_basis_dict(config, N):
     
     return basis_dict
 
-def _create_inverse_solver(config, N, axis_mask, W):
-    """Create and initialize InverseSolver instance."""
+def _create_inverse_solver(config, N, axis_mask, W, loss_mask=None):
+    """Create and initialize InverseSolver instance.
+
+    Parameters
+    ----------
+    config : dict
+        Pipeline configuration.
+    N : int
+        Number of time steps.
+    axis_mask : array-like
+        Valid-axis mask (S, 3).
+    W : array-like or None
+        Whitening matrix.
+    loss_mask : array-like or None
+        Optional mask (S, 3) for excluding sensors from the loss only
+        (e.g. for cross-validation).  Unlike axis_mask, this does NOT
+        affect the forward model or whitening dimensions.
+    """
 
     # Determine device once from config
     device = config.get("device", "cpu")
@@ -62,6 +78,7 @@ def _create_inverse_solver(config, N, axis_mask, W):
         device=device,
         method=config["solver"]["optimizer"],
         whitening_matrix=W,
+        loss_mask=loss_mask,
         verbose=False,
     )
 

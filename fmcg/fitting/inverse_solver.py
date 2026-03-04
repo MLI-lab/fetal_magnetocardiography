@@ -31,6 +31,7 @@ class InverseSolver:
         scaling=None,
         device="cpu",
         whitening_matrix=None,
+        loss_mask=None,
         verbose=True,
         **kwargs,
     ):
@@ -139,6 +140,20 @@ class InverseSolver:
         if whitening_matrix is not None and isinstance(whitening_matrix, (list, np.ndarray)):
             whitening_matrix = torch.tensor(whitening_matrix, dtype=torch.float32, device=device)
         self.whitening_matrix = whitening_matrix
+
+        # Loss mask: for CV, exclude held-out sensor from loss while keeping
+        # it in the forward model and whitening (shared W across folds).
+        # loss_mask has the same shape as axis_mask (S, 3). A 1D boolean mask
+        # over the valid-axes vector is derived automatically.
+        if loss_mask is not None:
+            if not isinstance(loss_mask, torch.Tensor):
+                loss_mask = torch.tensor(loss_mask, dtype=torch.bool, device=device)
+            loss_mask = loss_mask.to(torch.bool)
+            am_flat = self.axis_mask.ravel().bool()
+            lm_flat = loss_mask.ravel().bool()
+            self._loss_mask_1d = lm_flat[am_flat]  # (n_valid,) bool
+        else:
+            self._loss_mask_1d = None
 
         # create labels for parameters
         self.parameter_labels = [
@@ -454,14 +469,24 @@ class InverseSolver:
             F = self.forward_model.forward_linear(r)
             if self.whitening_matrix is not None:
                 F = torch.matmul(self.whitening_matrix, F)
-            m = torch.linalg.lstsq(F, field_init[:, self.axis_mask == 1]).solution.view(field_init.shape[0], -1, 3)
+            F_init = F
+            field_for_init = field_init[:, self.axis_mask == 1]
+            if self._loss_mask_1d is not None:
+                F_init = F[:, self._loss_mask_1d]
+                field_for_init = field_for_init[:, self._loss_mask_1d]
+            m = torch.linalg.lstsq(F_init, field_for_init).solution.view(field_init.shape[0], -1, 3)
         elif method == "pseudo_inv_regularized":
             # initialize m using inverse pass
             F = self.forward_model.forward_linear(r)
             if self.whitening_matrix is not None:
                 F = torch.matmul(self.whitening_matrix, F)
-            F_inv = torch.linalg.pinv(F, rcond=rcond)
-            m = (F_inv @ field_init[:, self.axis_mask == 1].view(field_init.shape[0], F_inv.shape[-1],1)).view(field_init.shape[0], -1, 3)
+            F_init = F
+            field_for_init = field_init[:, self.axis_mask == 1]
+            if self._loss_mask_1d is not None:
+                F_init = F[:, self._loss_mask_1d]
+                field_for_init = field_for_init[:, self._loss_mask_1d]
+            F_inv = torch.linalg.pinv(F_init, rcond=rcond)
+            m = (F_inv @ field_for_init.view(field_init.shape[0], F_inv.shape[-1],1)).view(field_init.shape[0], -1, 3)
         elif method == "random":
             # initialize m using random values
             m = torch.randn(field_init.shape[0], self.num_dipoles, 3, device=field_init.device)*1e-6
@@ -516,6 +541,12 @@ class InverseSolver:
         F = self.forward_model.forward_linear(r_hat)
         if self.whitening_matrix is not None:
             F = torch.matmul(self.whitening_matrix, F)
+
+        # Apply loss mask (CV: exclude held-out sensor from loss)
+        if self._loss_mask_1d is not None:
+            F = F[:, self._loss_mask_1d]
+            field_true = field_true[:, self._loss_mask_1d]
+
         T, S_D = field_true.shape
 
         # # Least squares solution
@@ -886,7 +917,11 @@ class InverseSolver:
                 F = self.forward_model.forward_linear(r_hat)
                 if self.whitening_matrix is not None:
                     F = torch.matmul(self.whitening_matrix, F)
-                m_hat = torch.linalg.lstsq(F, field_true[:, self.axis_mask==1].view(r_hat.shape[0], -1, 1)).solution.view(r_hat.shape[0], -1, 3)
+                field_for_fit = field_true[:, self.axis_mask==1]
+                if self._loss_mask_1d is not None:
+                    F = F[:, self._loss_mask_1d]
+                    field_for_fit = field_for_fit[:, self._loss_mask_1d]
+                m_hat = torch.linalg.lstsq(F, field_for_fit.view(r_hat.shape[0], -1, 1)).solution.view(r_hat.shape[0], -1, 3)
         else:
             raise ValueError("Best parameters are not set. Ensure the optimization process has been completed successfully.")
         if self.field_scaling is not None:
