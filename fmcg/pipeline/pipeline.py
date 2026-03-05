@@ -225,8 +225,17 @@ class Pipeline:
         
         # Log heartbeat findings
         for k in self.heartbeats_dict.keys():
-            if self.log_dict and f"selected_beats_{k}" in self.log_dict and f"selected_hr_{k}" in self.log_dict:
-                logger.info(f"Found {k} {self.log_dict[f'selected_beats_{k}']:.2f} heartbeats with mean HR {self.log_dict[f'selected_hr_{k}']:.2f} bpm")
+            if not self.log_dict:
+                continue
+            beats_key = f"selected_beats_{k}"
+            hr_key = f"selected_hr_{k}"
+            if beats_key in self.log_dict:
+                beats_val = self.log_dict.get(beats_key)
+                hr_val = self.log_dict.get(hr_key, None)
+                # Safely format values that may be None
+                beats_str = f"{beats_val}" if beats_val is not None else "0"
+                hr_str = f"{hr_val:.2f} bpm" if (hr_val is not None) else "N/A"
+                logger.info(f"Found {k} {beats_str} heartbeats with mean HR {hr_str}")
 
         # Compute HRV quality metrics (sdnn_ms, rmssd, outlier_rate, num_valid_peaks)
         for comp in self.data_dict:
@@ -1193,8 +1202,8 @@ class Pipeline:
             "signal_group": self.config["data"]["sig_group_names"],
             "sampfrom": self.config["data"]["sampfrom"],
             "sampto": self.config["data"]["sampto"],
-            "signal_power": self.sig_power,
-            "noise_power": self.noise_power,
+            "signal_power": getattr(self, "sig_power", None),
+            "noise_power": getattr(self, "noise_power", None),
             **{
                 f"{k}": v.tolist() if isinstance(v, np.ndarray) else v
                 for k, v in self.log_dict.items()
@@ -1205,11 +1214,22 @@ class Pipeline:
                     for i, sensor in enumerate(self.sensor_dict.keys())
                     if (self.axis_mask[i] == 0).all()
                 ]
-                if self.config["data"].get("noise_group_names", None) is not None
+                if (self.config["data"].get("noise_group_names", None) is not None 
+                    and hasattr(self, "sensor_dict") and hasattr(self, "axis_mask"))
                 else []
             ),
         }
         log_entry["note"] = self.log_note if self.log_note else ""
+
+        # Ensure expected heartbeat keys exist for components (fetal/maternal)
+        # even if post-processing failed or no beats were found
+        expected_components = ["fetal", "maternal"]
+        for comp in expected_components:
+            for key_name in [f"center_hr_{comp}", f"selected_hr_{comp}"]:
+                if key_name not in log_entry:
+                    log_entry[key_name] = None
+            if f"selected_beats_{comp}" not in log_entry:
+                log_entry[f"selected_beats_{comp}"] = 0
 
         # Define CSV path
         csv_path = os.path.join(
