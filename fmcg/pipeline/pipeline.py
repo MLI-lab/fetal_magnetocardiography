@@ -1309,8 +1309,10 @@ class Pipeline:
         df = pd.read_csv(labels_path)
 
         if measurement_config_date is not None:
-            # Filter the DataFrame to only include rows with dates later than the specified date
-            df = df[df["date"] >= measurement_config_date]
+            # Robustly filter by date using datetime comparison (strip leading 'D')
+            df_dates_all = pd.to_datetime(df["date"].astype(str).str.replace(r'^D', '', regex=True))
+            cutoff = pd.to_datetime(str(measurement_config_date).replace('D', '', 1))
+            df = df[df_dates_all >= cutoff].reset_index(drop=True)
 
         df["sig_group_names"] = pd.Series(dtype=str)
         df["noise_group_names"] = pd.Series(dtype=str)
@@ -1335,23 +1337,26 @@ class Pipeline:
             else:
                 # For this patient and session no empty recordings were found
                 # Searching for empty recordings from the closest measurement date that includes a noise / empty recording
-                # Remove leading 'D' from date strings before parsing
-                df_dates = pd.to_datetime(df["date"].str.replace(r'^D', '', regex=True))
+                # Remove leading 'D' from date strings before parsing and compute absolute diffs
+                df_dates = pd.to_datetime(df["date"].astype(str).str.replace(r'^D', '', regex=True))
                 row_date = pd.to_datetime(str(row["date"]).replace('D', '', 1))
                 date_diffs = (df_dates - row_date).abs()
-                # Exclude current row
-                date_diffs[i] = pd.Timedelta(days=99999)
+                # Exclude current row from consideration
+                try:
+                    date_diffs.loc[i] = pd.Timedelta(days=99999)
+                except Exception:
+                    date_diffs.iloc[i] = pd.Timedelta(days=99999)
+
                 # Only consider rows with at least one empty recording
                 has_empty = df["labels"].apply(lambda x: any(np.array(ast.literal_eval(x), dtype=int) == 0))
-                valid_indices = np.where(has_empty)[0]
-                if len(valid_indices) > 0:
-                    # Find the closest date among valid indices
-                    closest_idx = valid_indices[np.argmin(date_diffs.iloc[valid_indices])]
+                if has_empty.any():
+                    # Choose the closest date among rows that have an empty recording using pandas idxmin
+                    candidate_diffs = date_diffs[has_empty]
+                    closest_idx = candidate_diffs.idxmin()
                     closest_date = df.loc[closest_idx, "date"]
                     others = df[(df["date"] == closest_date) & has_empty]
                 else:
                     others = pd.DataFrame()  # No valid empty recordings found
-
                 # Check if there are other patients with the same date
                 other_row = None
                 if len(others) > 0:

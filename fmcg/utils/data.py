@@ -347,8 +347,8 @@ def parse_tdms_filename(filename, remove_prefix=True):
 
     i = 1 if remove_prefix else 0
     return {
-        "patient": parts[0][i:],  # P052
-        "series": parts[1][i:],  # S01
-        "date": parts[2][i:],  # 2024-06-20 (remove 'D' prefix)
-        "gestation": parts[3][i:],  # G29
+        "patient": parts[0][i:] if len(parts) > 0 else None,  # P052
+        "series": parts[1][i:] if len(parts) > 1 else None,  # S01
+        "date": parts[2][i:] if len(parts) > 2 else None,  # 2024-06-20 (remove 'D' prefix)
+        "gestation": parts[3][i:] if len(parts) > 3 else None,  # G29
     }
