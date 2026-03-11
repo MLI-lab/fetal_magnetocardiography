@@ -148,7 +148,7 @@ def plot_compare_magnetic_moments(
             raise ValueError("Either time or fs must be provided.")
         time = np.arange(m_hat_list[0].shape[0]) / fs
 
-    fig, axes = plt.subplots(2, 2, sharex=True, figsize=(7.11, 3), dpi=500)
+    fig, axes = plt.subplots(2, 2, sharex=True, figsize=(7.11, 2.5), dpi=500)
     from matplotlib.ticker import MaxNLocator, AutoMinorLocator
 
     for col, (m_hat, title) in enumerate(zip(m_hat_list, titles)):
@@ -208,7 +208,7 @@ def plot_compare_magnetic_moments(
         #axf.legend(["x", "y", "z"], loc="upper right")
         # add boxed label inside the plot (like other plot text usage)
         bbox_props = dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8, edgecolor="black", linewidth=.5)
-        axf.text(0.03, 0.9, "Fetal", ha="left", va="center", transform=axf.transAxes, bbox=bbox_props, zorder=100, fontsize=10)
+        axf.text(0.03, 0.85, "Fetal", ha="left", va="center", transform=axf.transAxes, bbox=bbox_props, zorder=100, fontsize=9)
 
         axm.plot(time, y_maternal_plot)
         # no column title here; use the top subplot for the column title
@@ -219,7 +219,7 @@ def plot_compare_magnetic_moments(
         axm.yaxis.set_minor_locator(AutoMinorLocator(2))
         #axm.legend(["x", "y", "z"], loc="upper right")
         bbox_props = dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8, edgecolor="black", linewidth=.5)
-        axm.text(0.03, 0.9, "Maternal", ha="left", va="center", transform=axm.transAxes, bbox=bbox_props, zorder=100, fontsize=10)
+        axm.text(0.03, 0.85, "Maternal", ha="left", va="center", transform=axm.transAxes, bbox=bbox_props, zorder=100, fontsize=9)
 
         # x minor ticks for both
         axm.xaxis.set_minor_locator(AutoMinorLocator(4))
