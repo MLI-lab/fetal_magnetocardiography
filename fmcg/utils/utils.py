@@ -185,7 +185,7 @@ def sig_power(x, root=False, win=None):
     return signal_power
 
 
-def sanity_check(sensor_dict, time, xlim=[50, 52], ylim=None, savename=None):
+def sanity_check(sensor_dict, time, xlim=[50, 52], ylim=None, savename=None, show_median=True):
     """
     Perform a sanity check on sensor data by plotting the median and 1-sigma bounds for each axis component.
 
@@ -225,9 +225,10 @@ def sanity_check(sensor_dict, time, xlim=[50, 52], ylim=None, savename=None):
     for i, components in enumerate(xyz_truncated):
         times = np.repeat(time_truncated[:, None], len(sensor_labels[i]), axis=1)
         axs[i].plot(times, components, alpha=0.3, label=sensor_labels[i])
-        axs[i].plot(
-            time_truncated, np.median(components, axis=1), color="black", label="median"
-        )
+        if show_median:
+            axs[i].plot(
+                time_truncated, np.median(components, axis=1), color="black", label="median"
+            )
         axs[i].set_title(names[i])
         axs[i].grid()
         axs[i].legend(title="Sensor:", loc="upper right")
