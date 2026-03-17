@@ -23,7 +23,7 @@ def get_config_for_date(date_str):
     # 2. Define your configuration timeline (Newest to Oldest)
     # This makes it easy to add a new config: just add one line here!
     configs = [
-        (datetime(2025, 9, 4).date(),  "fmcg.configs.measurement_config_2025_09_04"),
+        (datetime(2025, 9, 5).date(),  "fmcg.configs.measurement_config_2025_09_04"),
         (datetime(2024, 7, 5).date(),  "fmcg.configs.measurement_config_2024_07_05"),
         (datetime(2024, 3, 7).date(),  "fmcg.configs.measurement_config_2024_03_07"),
         (datetime(2023, 12, 5).date(),  "fmcg.configs.measurement_config_2023_12_05"),
@@ -38,7 +38,8 @@ def get_config_for_date(date_str):
             module = importlib.import_module(module_path)
             logger = logging.getLogger(__name__)
             logger.info(f"Using config {module_path} for date {current_date}")
-            return module.MeasurementConfig, module.SystemConfig, getattr(module, 'axis_mask', None)
+            print(f"Using config {module_path} for date {current_date}")
+            return module.MeasurementConfig, module.SystemConfig, getattr(module, 'axis_mask', None), getattr(module, 'r_sensors', None) 
 
     # If no config matched (date is before all thresholds), raise an error
     raise ValueError(f"No configuration found for date {current_date}. Date is before all config thresholds.")

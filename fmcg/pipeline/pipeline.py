@@ -1231,6 +1231,28 @@ class Pipeline:
             if f"selected_beats_{comp}" not in log_entry:
                 log_entry[f"selected_beats_{comp}"] = 0
 
+        # Compute derived success metrics (strict and relaxed)
+        hr_f = log_entry.get("selected_hr_fetal", None)
+        hr_m = log_entry.get("selected_hr_maternal", None)
+        beats_f = log_entry.get("selected_beats_fetal", 0)
+        beats_m = log_entry.get("selected_beats_maternal", 0)
+        
+        # Parse list-valued cells to scalar (handle cases where HR might be stored as array)
+        if isinstance(hr_f, (list, np.ndarray)):
+            hr_f = float(hr_f[0]) if len(hr_f) > 0 else None
+        if isinstance(hr_m, (list, np.ndarray)):
+            hr_m = float(hr_m[0]) if len(hr_m) > 0 else None
+        if isinstance(beats_f, (list, np.ndarray)):
+            beats_f = int(beats_f[0]) if len(beats_f) > 0 else 0
+        if isinstance(beats_m, (list, np.ndarray)):
+            beats_m = int(beats_m[0]) if len(beats_m) > 0 else 0
+        
+        # Strict success: fetal_hr > maternal_hr + 10 bpm AND both have >= 5 detected peaks
+        if hr_f is not None and hr_m is not None and not np.isnan(hr_f) and not np.isnan(hr_m):
+            log_entry["success"] = int(hr_f > hr_m + 10 and beats_f >= 5 and beats_m >= 5)
+        else:
+            log_entry["success"] = 0
+
         # Define CSV path
         csv_path = os.path.join(
             self.config.get("output_dir", "./"), "processed_records.csv"
