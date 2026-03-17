@@ -1,26 +1,29 @@
 from dataclasses import dataclass
 import numpy as np
 
-axis_mask = np.array(
-    [
-        [0, 1, 1],
-        [1, 1, 0],
-        [0, 1, 1],
-        [1, 1, 0],
-        [1, 1, 0],
-        [0, 1, 1],
-        [1, 1, 0],
-        [0, 1, 1], #OW #[0, 0, 0], #
-        [0, 1, 1],
-        [1, 1, 1],  # NL?
-        [0, 1, 1],
-        [1, 1, 0],
-        [1, 1, 0],
-        [0, 1, 1],
-        [1, 1, 0], #OR #  [0, 0, 0],#
-        [0, 1, 1],
+axis_mask = np.array([
+       [1, 1, 0],
+       [0, 1, 1],
+       [1, 1, 0],
+       [0, 1, 1],
+       [0, 1, 1],
+       [1, 1, 0],
+       [0, 1, 1],
+       [1, 1, 0],
+       [1, 1, 0],
+       [0, 1, 1],
+       [1, 1, 0],
+       [0, 1, 1],
+       [0, 1, 1],
+       [1, 1, 0],
+       [0, 1, 1],
+       [1, 1, 0]
     ]
 )
+
+from fmcg.utils.data import generate_array_coordinates
+r_sensors = generate_array_coordinates(grid_shape=(4, 4), grid_spacing=0.0205, y=0)
+
 
 @dataclass
 class SystemConfig:
@@ -53,42 +56,43 @@ class SystemConfig:
     # value represents the direction of the axis. Example [-1,-3,2]: The y-axis of the holdeer is given by neg. z-axis
     # of a gen3 quspin at that position in the grid.
     gen3quspin_coor_to_plate_coor = [
-        [-1, -3, 2],
-        [2, -3, 1],
-        [-1, -3, 2],
-        [2, -3, 1],
-        [-2, -3, -1],
-        [1, -3, -2],
-        [-2, -3, -1],
-        [1, -3, -2],
-        [-1, -3, 2],
-        [2, -3, 1],
-        [-1, -3, 2],
-        [2, -3, 1],
-        [-2, -3, -1],
-        [1, -3, -2],
-        [-2, -3, -1],
-        [1, -3, -2],
+        [1, -3, -2],    #OQ
+        [2, -3, -1],     #F1
+        [1, -3, -2],    #OO
+        [-2, -3, -1],     #OX
+        [2, -3, 1],   #OW
+        [1, -3, -2],    #OY
+        [-2, -3, -1],   #EZ
+        [1, -3, -2],    #YQ, GEN2
+        [-1, -3, 2],    #OT
+        [2, -3, 1],     #OP
+        [-1, -3, 2],    #F0
+        [-2, -3, -1],     #C1, GEN2
+        [2, -3, 1],   #EY
+        [-1, -3, 2],    #YP, GEN2
+        [-2, -3, -1],   #OR
+        [-1, -3, 2],    #F2
     ]
 
     # Whether a sensor is a Gen2 sensor
     is_gen2 = {
-        "OW": False,
-        "OT": False,
-        "F1": False,
+        "OW": False, 
+        "OT": False, # has often problems
+        "F1": False, # has often problems
         "EY": False,
-        "EZ": False, #true # supposedly already compensated for
+        "EZ": False, 
         "OX": False,
-        "OR": False,
-        "OQ": True,
-        "C1": False, #true
-        "YP": False, #true
-        "YQ": False, #true
-        "OU": False, 
-        "F0": True,
+        "OR": False, 
+        "OQ": False, 
+        "C1": False, #True # has often problems
+        "YP": False, #True # has often problems
+        "YQ": False, #True # has often problems
+        "OO": False, 
+        "F0": False, # has often problems
         "F2": False,
         "OY": False,
         "NL": False,
+        "OP": False,
     }
     # Coordinate system mapping for Gen2 sensors
     gen3_to_gen2 = [-1, -1, 1]
@@ -126,9 +130,9 @@ class MeasurementConfig:
 
     # The position of the sensors in the holder (4x4 grid) ordering 1-16
     quspin_positions = [
-        ["F1", "OX", "OU", "OQ"],
-        ["YQ", "EZ", "OY", "OW"],
-        ["OT", "NL", "F0", "C1"],
+        ["OQ", "F1", "OO", "OX"],
+        ["OW", "OY", "EZ", "YQ"],
+        ["OT", "OP", "F0", "C1"],
         ["EY", "YP", "OR", "F2"],
     ]
     # The names of the DAC
@@ -150,7 +154,7 @@ class MeasurementConfig:
         "F1": [None, f"{DAC1}14", f"{DAC1}15"],
         "EY": [None, f"{DAC1}24", f"{DAC1}25"],
         "EZ": [None, f"{DAC1}26", f"{DAC1}27"],
-        "OU": [None, f"{DAC1}28", f"{DAC1}29"],
+        "OO": [None, f"{DAC1}28", f"{DAC1}29"],
         "OR": [None, f"{DAC1}30", f"{DAC1}31"],
-        "NL": [f"{DAC2}1", f"{DAC2}2", f"{DAC2}3"],
+        "OP": [f"{DAC2}1", f"{DAC2}2", f"{DAC2}3"],
     }

@@ -22,6 +22,9 @@ axis_mask = np.array(
     ]
 )
 
+from fmcg.utils.data import generate_array_coordinates
+r_sensors = generate_array_coordinates(grid_shape=(4, 4), grid_spacing=0.04, y=0)
+
 @dataclass
 class SystemConfig:
     """

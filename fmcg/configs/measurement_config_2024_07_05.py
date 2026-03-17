@@ -22,6 +22,9 @@ axis_mask = np.array(
     ]
 )
 
+from fmcg.utils.data import generate_array_coordinates
+r_sensors = generate_array_coordinates(grid_shape=(4, 4), grid_spacing=0.04, y=0)
+
 @dataclass
 class SystemConfig:
     """
@@ -77,14 +80,14 @@ class SystemConfig:
         "OT": False,
         "F1": False,
         "EY": False,
-        "EZ": False, #true # supposedly already compensated for
+        "EZ": False,
         "OX": False,
         "OR": False,
         "OQ": False,
         "C1": False, #true
         "YP": False, #true
         "YQ": False, #true
-        "OU": False, 
+        "OO": False, 
         "F0": False,
         "F2": False,
         "OY": False,
@@ -126,7 +129,7 @@ class MeasurementConfig:
 
     # The position of the sensors in the holder (4x4 grid) ordering 1-16
     quspin_positions = [
-        ["F1", "OX", "OU", "OQ"],
+        ["F1", "OX", "OO", "OQ"],
         ["YQ", "EZ", "OY", "OW"],
         ["OT", "NL", "F0", "C1"],
         ["EY", "YP", "OR", "F2"],
@@ -150,7 +153,7 @@ class MeasurementConfig:
         "F1": [None, f"{DAC1}14", f"{DAC1}15"],
         "EY": [None, f"{DAC1}24", f"{DAC1}25"],
         "EZ": [None, f"{DAC1}26", f"{DAC1}27"],
-        "OU": [None, f"{DAC1}28", f"{DAC1}29"],
+        "OO": [None, f"{DAC1}28", f"{DAC1}29"],
         "OR": [None, f"{DAC1}30", f"{DAC1}31"],
         "NL": [f"{DAC2}1", f"{DAC2}2", f"{DAC2}3"],
     }

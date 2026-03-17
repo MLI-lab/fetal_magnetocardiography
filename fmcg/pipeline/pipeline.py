@@ -170,7 +170,7 @@ class Pipeline:
         r_init = np.repeat(self.config["solver"]["r_init"], N, axis=0)
         
         mdl = _create_inverse_solver(
-            self.config, N, self.axis_mask, self.W,
+            self.config, N, self.axis_mask, self.W, self.r_sensors,
             loss_mask=getattr(self, 'loss_mask', None),
         )
         
@@ -269,10 +269,8 @@ class Pipeline:
         Returns a dict of scalar metrics, or an empty dict if computation is not possible.
         All metrics are computed in the whitened domain.
         """
-        r_sensors = data.generate_array_coordinates(
-            grid_shape=(4, 4), grid_spacing=0.04, y=0
-        )
-        fm = ForwardModel(r_sensors=r_sensors, device="cpu")
+
+        fm = ForwardModel(r_sensors=self.r_sensors, device="cpu")
 
         if field_windowed.shape[0] != m_hat.shape[0]:
             logger.warning(
@@ -861,6 +859,7 @@ class Pipeline:
                             self.config,
                             self.axis_mask,
                             self.W,
+                            self.r_sensors,
                             self.fs_,
                         )
                         segment_args.append(args)
@@ -1440,6 +1439,7 @@ class Pipeline:
         config,
         system_config,
         measurement_config,
+        r_sensors,
         mask=None,
         loss_mask=None,
         log_note="",
@@ -1475,6 +1475,7 @@ class Pipeline:
 
         self.systemconfig = system_config
         self.measurementconfig = measurement_config
+        self.r_sensors = r_sensors
 
         # Convert PipelineConfig (dataclass) to dict if needed for backward compatibility
         if hasattr(config, "to_dict"):

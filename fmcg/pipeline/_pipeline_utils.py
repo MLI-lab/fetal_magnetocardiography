@@ -42,7 +42,7 @@ def _create_basis_dict(config, N):
     
     return basis_dict
 
-def _create_inverse_solver(config, N, axis_mask, W, loss_mask=None):
+def _create_inverse_solver(config, N, axis_mask, W, r_sensors, loss_mask=None):
     """Create and initialize InverseSolver instance.
 
     Parameters
@@ -55,6 +55,8 @@ def _create_inverse_solver(config, N, axis_mask, W, loss_mask=None):
         Valid-axis mask (S, 3).
     W : array-like or None
         Whitening matrix.
+    r_sensors : array-like
+        Sensor positions (S, 3).
     loss_mask : array-like or None
         Optional mask (S, 3) for excluding sensors from the loss only
         (e.g. for cross-validation).  Unlike axis_mask, this does NOT
@@ -64,9 +66,6 @@ def _create_inverse_solver(config, N, axis_mask, W, loss_mask=None):
     # Determine device once from config
     device = config.get("device", "cpu")
 
-    r_sensors = data.generate_array_coordinates(
-        grid_shape=(4, 4), grid_spacing=0.04, y=0
-    )
     num_dipoles = config["solver"]["num_dipoles"]
     basis_dict = _create_basis_dict(config, N)
     return InverseSolver(
@@ -270,7 +269,7 @@ def _process_segment_worker(args):
     This function needs to be at module level for multiprocessing.
     """
     try:
-        segment_data, segment_time, segment_idx, config, axis_mask, W, fs_ = args
+        segment_data, segment_time, segment_idx, config, axis_mask, W, r_sensors, fs_ = args
         # Use global device from config
         device = config.get("device", "cpu")
 
@@ -285,7 +284,7 @@ def _process_segment_worker(args):
 
         # Initialize solver and parameters
         r_init = np.repeat(config["solver"]["r_init"], N, axis=0)
-        mdl = _create_inverse_solver(config, N, axis_mask, W)
+        mdl = _create_inverse_solver(config, N, axis_mask, W, r_sensors)
         initial_parameters, field_true = _initialize_solver_parameters(
             mdl, r_init, y, config
         )
@@ -342,7 +341,7 @@ def _process_segment_worker_threaded(
         # Initialize solver and parameters
         r_init = np.repeat(pipeline_ref.config["solver"]["r_init"], N, axis=0)
         mdl = _create_inverse_solver(
-            pipeline_ref.config, N, pipeline_ref.axis_mask, pipeline_ref.W
+            pipeline_ref.config, N, pipeline_ref.axis_mask, pipeline_ref.W, pipeline_ref.r_sensors
         )
         initial_parameters, field_true = _initialize_solver_parameters(
             mdl, r_init, y, pipeline_ref.config
