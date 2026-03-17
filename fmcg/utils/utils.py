@@ -23,6 +23,8 @@ def get_config_for_date(date_str):
     # 2. Define your configuration timeline (Newest to Oldest)
     # This makes it easy to add a new config: just add one line here!
     configs = [
+        (datetime(2026, 3, 17).date(), "fmcg.configs.measurement_config_2026_03_17"),
+        (datetime(2025, 11, 11).date(), "fmcg.configs.measurement_config_2025_11_11"),
         (datetime(2025, 9, 5).date(),  "fmcg.configs.measurement_config_2025_09_04"),
         (datetime(2024, 7, 5).date(),  "fmcg.configs.measurement_config_2024_07_05"),
         (datetime(2024, 3, 7).date(),  "fmcg.configs.measurement_config_2024_03_07"),

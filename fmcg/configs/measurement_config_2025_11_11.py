@@ -1,3 +1,7 @@
+"""
+In this config senors OW, OQ were switched in the array by accident (orientation of the sensor was according to the position but positions where swapped).
+"""
+
 from dataclasses import dataclass
 import numpy as np
 
@@ -129,8 +133,8 @@ class MeasurementConfig:
 
     # The position of the sensors in the holder (4x4 grid) ordering 1-16
     quspin_positions = [
-        ["OQ", "F1", "OO", "OX"],
-        ["OW", "OY", "EZ", "YQ"],
+        ["OW", "F1", "OO", "OX"],
+        ["OQ", "OY", "EZ", "YQ"],
         ["OT", "OP", "F0", "C1"],
         ["EY", "YP", "OR", "F2"],
     ]

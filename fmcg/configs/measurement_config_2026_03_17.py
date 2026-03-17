@@ -1,3 +1,7 @@
+"""
+In this config, the previous sensor mapping issue (OW and OQ being swapped) has been fixed. Additionally, the OP sensor was found to be unplugged and has now been resolved. This likely dates back to the sensor change from triaxial 4I -> OP (2025-02-20).
+
+"""
 from dataclasses import dataclass
 import numpy as np
 
