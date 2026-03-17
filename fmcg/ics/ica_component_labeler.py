@@ -131,11 +131,9 @@ class ICAComponentLabeler:
         print("Loading and preprocessing data...")
         # load patient data
         sig_data_dict_raw, time, fs, noise_data_dict_raw = load_structured_patient_data_and_noise(
-            params["SystemConfig"],
-            params["MeasurementConfig"],
             **{k: params[k] for k in params.keys() & {"ds_path", "patient", "series", "sig_group_names", "noise_group_names"}},
             files="all",
-            print_groups=True,
+            print_groups=True
         )
 
         print(f"Signal Length: {len(list(sig_data_dict_raw.values())[0])/fs} s")

@@ -40,7 +40,6 @@ def get_config_for_date(date_str):
             module = importlib.import_module(module_path)
             logger = logging.getLogger(__name__)
             logger.info(f"Using config {module_path} for date {current_date}")
-            print(f"Using config {module_path} for date {current_date}")
             return module.MeasurementConfig, module.SystemConfig, getattr(module, 'axis_mask', None), getattr(module, 'r_sensors', None) 
 
     # If no config matched (date is before all thresholds), raise an error

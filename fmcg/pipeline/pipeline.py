@@ -388,10 +388,7 @@ class Pipeline:
             # Synthetic data mode
             logger.info("Loading synthetic data...")
             self.sig_data_dict_raw, self.time, self.fs, self.noise_data_dict_raw = (
-                self.data_loader.load_structured_patient_data_and_noise(
-                    self.systemconfig,
-                    self.measurementconfig,
-                )
+                self.data_loader.load_structured_patient_data_and_noise(return_configs=True)
             )
             # Store ground truth for evaluation
             self.ground_truth = self.data_loader.ground_truth
@@ -404,10 +401,8 @@ class Pipeline:
             )
 
             # Load the raw signal and noise data
-            self.sig_data_dict_raw, self.time, self.fs, self.noise_data_dict_raw = (
+            self.sig_data_dict_raw, self.time, self.fs, self.noise_data_dict_raw, configs = (
                 data.load_structured_patient_data_and_noise(
-                    self.systemconfig,
-                    self.measurementconfig,
                     **{
                         k: self.config["data"][k]
                         for k in self.config["data"].keys()
@@ -422,8 +417,12 @@ class Pipeline:
                         }
                     },
                     files="all",
+                    return_configs=True
                 )
             )
+            self.r_sensors = configs.get("r_sensors", None)
+            self.measurementconfig = configs.get("MeasurementConfig", None)
+            self.systemconfig = configs.get("SystemConfig", None)
             
         signal_length = len(list(self.sig_data_dict_raw.values())[0]) / self.fs
         noise_length = len(list(self.noise_data_dict_raw.values())[0]) / self.fs
@@ -1437,9 +1436,9 @@ class Pipeline:
     def run(
         self,
         config,
-        system_config,
-        measurement_config,
-        r_sensors,
+        system_config=None,
+        measurement_config=None,
+        r_sensors=None,
         mask=None,
         loss_mask=None,
         log_note="",
@@ -1473,6 +1472,12 @@ class Pipeline:
         if verbose:
             logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
+        if system_config is not None or measurement_config is not None or r_sensors is not None:
+            import warnings
+            warnings.warn(
+                "Explicitly passing SystemConfig, MeasurementConfig, or r_sensors is deprecated. "
+                "These will be automatically inferred. Passed values will be ignored."
+            )
         self.systemconfig = system_config
         self.measurementconfig = measurement_config
         self.r_sensors = r_sensors
@@ -1577,11 +1582,6 @@ class Pipeline:
 
 # Example usage
 if __name__ == "__main__":
-    from fmcg.configs.measurement_config_2024_07_05 import (
-        MeasurementConfig as MeasurementConfig_2024_07_05,
-        SystemConfig as SystemConfig_2024_07_05,
-    )
-
     example_config = {
         "catch_errors": True,
         "device": "cuda:3",
@@ -1665,8 +1665,6 @@ if __name__ == "__main__":
     }
     pipeline = Pipeline()
     pipeline.run(
-        example_config,
-        SystemConfig_2024_07_05,
-        MeasurementConfig_2024_07_05
+        example_config
     )
 

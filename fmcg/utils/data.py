@@ -1,6 +1,7 @@
 import os
 import glob
 import logging
+import datetime
 
 import numpy as np
 import wfdb
@@ -8,6 +9,7 @@ from nptdms import TdmsFile
 from scipy.signal import butter, filtfilt
 
 from .plotting import plot_utils
+from .utils import get_config_for_date
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +83,8 @@ def load_vcg_data(
 
 
 def load_structured_patient_data_and_noise(
-    SystemConfig,
-    MeasurementConfig,
+    SystemConfig=None,
+    MeasurementConfig=None,
     ds_path=None,
     patient="P077",
     series="S01",
@@ -93,13 +95,19 @@ def load_structured_patient_data_and_noise(
     noise_series=None,
     offset=5000,
     print_groups=False,
+    return_configs=False,
 ):
     """
     Loads patient data and noise data from TDMS files, synchronizes the data, and returns the data along with time vector and sampling frequency.
 
+    If SystemConfig and MeasurementConfig are None (recommended), they will be automatically determined from the
+    measurement date in the TDMS filename using get_config_for_date(). Explicit config passing is deprecated.
+
     Parameters:
-        SystemConfig (dataclass): Configuration object containing system-specific settings, including coordinate mappings and sensor types.
-        MeasurementConfig (dataclass): Configuration object containing measurement-specific settings, including sensor positions and channel mappings.
+        SystemConfig (dataclass, optional): DEPRECATED. Configuration object containing system-specific settings.
+            If None, automatically determined from measurement date. Default is None.
+        MeasurementConfig (dataclass, optional): DEPRECATED. Configuration object containing measurement-specific settings.
+            If None, automatically determined from measurement date. Default is None.
         ds_path (str): Path to the dataset directory. Required parameter.
         patient (str): Patient identifier. Default is "P077".
         series (str): Series identifier. Default is "S01".
@@ -110,19 +118,40 @@ def load_structured_patient_data_and_noise(
         noise_series (str, optional): Series identifier for noise data. If None, uses the same series as signal data. Default is None.
         offset (int): Number of samples to truncate from the beginning. Defaults to 5000.
         print_groups (bool): If True, prints available groups in the TDMS file. Default is False.
+        return_configs (bool): If True, returns configuration information in a dict. Default is False.
 
     Returns:
-        tuple: A tuple containing:
+        tuple: If return_configs=False (default):
             - data_dict (dict): Dictionary where keys are channel names and values are numpy arrays of the channel data.
             - time (numpy.ndarray): Time vector corresponding to the data.
             - fs (int): Sampling frequency in Hz.
             - noise_dict (dict): Dictionary where keys are channel names and values are numpy arrays of the noise data.
+
+        If return_configs=True:
+            - data_dict, time, fs, noise_dict, config (dict)
+
+            Where config dict contains:
+                - 'SystemConfig': System configuration object (used for both signal and noise)
+                - 'MeasurementConfig': Measurement configuration object (used for both signal and noise)
+                - 'date': Measurement date string from signal data (YYYY-MM-DD)
+                - 'r_sensors': Sensor positions array
+                - 'axis_mask': Axis mask array
     """
     if ds_path is None:
         raise ValueError("ds_path must be provided. Please specify the path to the dataset directory.")
 
-    # Load signal data
-    sig_data_dict, time, fs = load_patient_data(
+    # Issue deprecation warning if configs were explicitly provided
+    if SystemConfig is not None or MeasurementConfig is not None:
+        import warnings
+        warnings.warn(
+            "Explicitly passing SystemConfig and MeasurementConfig to load_structured_patient_data_and_noise "
+            "is deprecated and will be ignored. Configs will be automatically determined.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
+    # Load signal data with auto-detected configs
+    sig_data_dict, time, fs, config_sig = load_patient_data(
         ds_path=ds_path,
         patient=patient,
         series=series,
@@ -130,23 +159,48 @@ def load_structured_patient_data_and_noise(
         group_names=sig_group_names,
         offset=offset,
         print_groups=print_groups,
+        return_configs=True
     )
 
-    # Load noise data
-    noise_data_dict, _, _ = load_patient_data(
+    # Load noise data with auto-detected configs
+    noise_data_dict, _, _, config_noise = load_patient_data(
         ds_path=ds_path,
         patient=patient if noise_patient is None else noise_patient,
         series=series if noise_series is None else noise_series,
         files=files,
         group_names=noise_group_names,
-        # offset=offset,
+        return_configs=True
+        # offset=offset,  # Note: offset not applied to noise data
         # print_groups=print_groups
     )
 
-    sig_data_dict = structure_data(sig_data_dict, SystemConfig, MeasurementConfig)
-    noise_data_dict = structure_data(noise_data_dict, SystemConfig, MeasurementConfig)
+    # Check if signal and noise configs are consistent (compare the actual config objects, not dates)
+    if (config_sig['SystemConfig'] is not config_noise['SystemConfig'] or
+        config_sig['MeasurementConfig'] is not config_noise['MeasurementConfig']):
+        import warnings
+        warnings.warn(
+            f"Signal and noise data have different configurations (signal date={config_sig['date']}, "
+            f"noise date={config_noise['date']}). Using signal configs for both.",
+            UserWarning,
+            stacklevel=2
+        )
+
+    sig_data_dict = structure_data(sig_data_dict, config_sig['SystemConfig'], config_sig['MeasurementConfig'])
+    noise_data_dict = structure_data(noise_data_dict, config_noise['SystemConfig'], config_noise['MeasurementConfig'])
+
+    if return_configs:
+        config = {
+            'SystemConfig': config_sig['SystemConfig'],
+            'MeasurementConfig': config_sig['MeasurementConfig'],
+            'date': config_sig['date'],
+            'r_sensors': config_sig['r_sensors'],
+            'axis_mask': config_sig['axis_mask']
+        }
+        return sig_data_dict, time, fs, noise_data_dict, config
 
     return sig_data_dict, time, fs, noise_data_dict
+
+
 
 
 def load_patient_data(
@@ -157,9 +211,12 @@ def load_patient_data(
     group_names="R001",
     offset=5000,
     print_groups=False,
+    return_configs=False,
 ):
     """
     Loads patient data from TDMS files, synchronizes the data, and returns the data along with time vector and sampling frequency.
+
+    Automatically determines SystemConfig and MeasurementConfig from the measurement date in the TDMS filename.
 
     Parameters:
         ds_path (str): Path to the dataset directory. Required parameter.
@@ -171,12 +228,23 @@ def load_patient_data(
             and files are processed sequentially, each group element corresponding to a file. Default is "R001".
         offset (int): Number of samples to truncate from the beginning. Defaults to 5000.
         print_groups (bool): If True, prints available groups in the TDMS file. Default is False.
+        return_configs (bool): If True, returns auto-detected configuration information in a dict. Default is False.
 
     Returns:
-        tuple: A tuple containing:
+        tuple: If return_configs=False (default):
             - data_dict (dict): Dictionary where keys are channel names and values are numpy arrays of the channel data.
             - time (numpy.ndarray): Time vector corresponding to the data.
             - fs (int): Sampling frequency in Hz.
+
+        If return_configs=True:
+            - data_dict, time, fs, config (dict)
+
+            Where config dict contains:
+                - 'SystemConfig': System configuration object
+                - 'MeasurementConfig': Measurement configuration object
+                - 'date': Measurement date string (YYYY-MM-DD)
+                - 'r_sensors': Sensor positions array
+                - 'axis_mask': Axis mask array
 
     Notes:
         - The function synchronizes the data by truncating to the latest starting channel and ensuring all channels have the same length.
@@ -244,6 +312,21 @@ def load_patient_data(
 
     # Create a time vector based on the synchronized data length and sampling frequency
     time = np.arange(data_dict[list(data_dict.keys())[0]].shape[0]) / fs
+
+    if return_configs:
+        date = os.path.basename(file_path).split("_")[2]  # Extract the date part 
+        #remove the leading 'D' if present
+        if date.startswith('D'):
+            date = date[1:]
+        MeasurementConfig, SystemConfig, axis_mask, r_sensors = get_config_for_date(date)
+        config = {
+            'SystemConfig': SystemConfig,
+            'MeasurementConfig': MeasurementConfig,
+            'date': date,
+            'r_sensors': r_sensors,
+            'axis_mask': axis_mask
+        }
+        return data_dict, time, fs, config
 
     return data_dict, time, fs
 
