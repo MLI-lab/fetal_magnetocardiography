@@ -136,7 +136,7 @@ def plotICA(
     return compF, maternals
 
 
-def plotHR(signal, compF=None, h=2, d=400, fs=1000, minBpm=-1, maxBpm=-1, saveplt=False, plot=True):
+def plotHR(signal, compF=None, fs=1000, minBpm=-1, maxBpm=-1, plot=True):
 
     def _find_peaks(signal):
         # Find all peaks
@@ -162,9 +162,10 @@ def plotHR(signal, compF=None, h=2, d=400, fs=1000, minBpm=-1, maxBpm=-1, savepl
         peaks = peaks[:-1][
             valid_indices
         ]  # Exclude the last peak as it doesn't have a corresponding interval
-        heart_rates = heart_rates[valid_indices]
+    else:
+        valid_indices = np.arange(len(heart_rates))
 
-    avg = np.mean(heart_rates)
+    avg = np.mean(heart_rates[valid_indices])
 
     if plot:
         # Create the plot
@@ -172,7 +173,8 @@ def plotHR(signal, compF=None, h=2, d=400, fs=1000, minBpm=-1, maxBpm=-1, savepl
 
         # Plot vertical lines
         x_positions = np.arange(len(heart_rates))
-        plt.vlines(x_positions, ymin=0, ymax=heart_rates, colors="b", linewidth=1)
+        #plt.vlines(x_positions, ymin=0, ymax=heart_rates, colors="b", linewidth=1)
+        plt.plot(x_positions, heart_rates, ".-", label="Heart Rate (BPM)", color="k", fillstyle="none" )
 
         # Customize the plot
         plt.xlabel("Beat Number")
@@ -183,17 +185,10 @@ def plotHR(signal, compF=None, h=2, d=400, fs=1000, minBpm=-1, maxBpm=-1, savepl
         num_ticks = 30  # Adjust this number to control how many ticks you want
         tick_locations = np.linspace(0, len(heart_rates) - 1, num_ticks, dtype=int)
         plt.xticks(tick_locations, tick_locations)
-        plt.yticks(np.linspace(60, 150, 20, dtype=int), np.linspace(60, 150, 20, dtype=int))
-
-        # Set y-axis to start from 100
-        plt.ylim(bottom=60)
-
-        # Add markers at the top of each line
-        plt.plot(x_positions, heart_rates, "ro", markersize=2)
 
         # Plot all data points (they're all between minBpm and maxBpm now)
         plt.plot(
-            x_positions, heart_rates, "go", markersize=4, label="Between Min and Max BPM"
+            x_positions[valid_indices], heart_rates[valid_indices], ".", color="tab:green", markersize=4, label="Between Min and Max BPM"
         )
 
         # plt.savefig('heartRate.svg',  format='svg', bbox_inches='tight')
@@ -202,7 +197,7 @@ def plotHR(signal, compF=None, h=2, d=400, fs=1000, minBpm=-1, maxBpm=-1, savepl
 
         plt.show()
 
-    return heart_rates, peaks
+    return heart_rates[valid_indices], peaks
 
 
 def upDownSample(

@@ -17,7 +17,7 @@ import torch.nn as torch_nn
 def get_config_for_date(date_str):
     # 1. Clean and parse the date safely
     # Removes non-numeric prefix characters like 'v2025...' or ' 2025...'
-    clean_date_str = date_str.lstrip('D ') 
+    clean_date_str = date_str.lstrip('D ').rstrip('.tdms')
     current_date = datetime.strptime(clean_date_str, "%Y-%m-%d").date()
 
     # 2. Define your configuration timeline (Newest to Oldest)
