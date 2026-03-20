@@ -44,7 +44,7 @@ from . import fitting
 from . import signal
 from . import analysis
 from . import ics
-from .utils.utils import get_config_for_date
+from .utils.utils import get_config_for_date, reduced2full
 
 __all__ = [
     "Pipeline",

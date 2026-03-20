@@ -2,284 +2,101 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
-import neurokit2 as nk
-from scipy.stats import kurtosis
-import pandas as pd
-from sklearn.cluster import AgglomerativeClustering, KMeans
-from sklearn.discriminant_analysis import StandardScaler
-from scipy.signal import correlate
-from scipy.stats import zscore
-from scipy.fft import rfft, irfft
+from fmcg.ics.functions import plotHR, avg_channels_hr_range
+from fmcg.utils.plotting.plot_utils import plot_sensor_signals
+from fmcg.utils.utils import reduced2full
 
-from fmcg.analysis.heartbeats import detect_hr_outlier
+def construct_template(data, sources, fs, comps, window_size=0.25, bpm_tol=5, plot=False, axis_mask=None):
+    assert data.ndim == 2
 
+    # Compute template from average of heartbeats
+    heartRate, peaks = plotHR(sources, comps, fs=fs, plot=plot)
 
-def compute_ICA_statistics(sources, fs, offset=10, span=5):
-    """
-    Computes statistics for all ICA components.
-    """
-    n_components = sources.shape[1]
-    stats_list = []
-    
-    # 1. Calculate statistics for ALL components
-    for j in range(n_components):
-        signal = sources[int(offset*fs) : int(offset*fs + span*fs), j]
-        
-        # Basic Kurtosis
-        kurt = kurtosis(signal)
-        
-        # Signal processing for peak detection
-        try:
-            # Invert if necessary and clean
-            signal_inv, _ = nk.ecg_invert(signal, fs)
-            signal_clean = nk.ecg_clean(signal_inv, sampling_rate=fs, method="vg")
-            peaks_dict = nk.ecg_findpeaks(signal_clean, sampling_rate=fs, method="vg")
-            peaks = peaks_dict["ECG_R_Peaks"]
-            
-            if len(peaks) > 1:
-                # Stats computations               
-                snr = 10 * np.log10(np.mean(signal[peaks]**2) / np.mean(signal**2))
-                mean_hr = 60 / np.mean(np.diff(peaks) / fs)  # bpm
-                sdnn = np.std(np.diff(peaks)) * (1000 / fs)  # ms
-
-                hr_outlier = detect_hr_outlier(peaks, fs)
-                hr_outlier_rate = np.sum(hr_outlier) / len(hr_outlier)
-            else:
-                mean_hr, snr, sdnn, hr_outlier_rate = np.nan, np.nan, 0.0, 0.0
-        except:
-            # Handle edge cases where neurokit fails
-            peaks = []
-            mean_hr, snr, sdnn, hr_outlier_rate = np.nan, np.nan, 0.0, 0.0
-
-        stats_list.append({
-            'index': j,
-            'signal': signal,
-            'peaks': peaks,
-            'num_peaks': len(peaks),
-            'kurtosis': kurt,
-            'mean_hr': mean_hr,
-            'snr': snr,
-            'sdnn': sdnn,
-            'hr_outlier_rate': hr_outlier_rate
-        })
-
-    # 2. Sort components by SNR (highest SNR first)
-    # If you want fetal (usually higher SNR) at the top, keep reverse=True
-    stats_list.sort(key=lambda x: x['snr'], reverse=True)
-
-    return stats_list
-
-def _lagged_correlation_matrix(signals):
-    """
-    Computes a symmetric distance matrix based on max correlation (lag >= 0)
-    using vectorized FFT broadcasting.
-    """
-    n_comps, n_samples = signals.shape
-    # 1. Standardize signals along the time axis
-    # This ensures the cross-correlation equals the correlation coefficient
-    norm_signals = zscore(signals, axis=1)
-    
-    # 2. Pad for FFT to avoid circular convolution (length 2n - 1)
-    pad_len = 2 * n_samples - 1
-    # Use rfft for real-valued signals (faster and uses less memory)
-    signals_fft = np.fft.rfft(norm_signals, n=pad_len, axis=1)
-    
-    max_corrs = np.zeros((n_comps, n_comps))
-
-    for i in range(n_comps):
-        # 3. Multiply spectrum of signal 'i' with ALL other signals
-        # np.conj handles the 'correlation' vs 'convolution' logic
-        combined_fft = signals_fft[i] * np.conj(signals_fft)
-        
-        # 4. Batch Inverse FFT to get all correlations for this row
-        # This returns an (n_comps, pad_len) matrix
-        corrs = np.fft.irfft(combined_fft, n=pad_len, axis=1)
-        
-        # 5. Extract lags >= 0 
-        # In the 'full' correlation result, lag 0 is at index 0 
-        # due to how np.fft.irfft aligns the output.
-        # However, to match 'scipy.signal.correlate' logic:
-        # Lags [0...n_samples-1] are at the start of the array.
-        lags_ge_zero = corrs[:, :n_samples]
-        
-        # 6. Find max absolute correlation for each pair
-        # We divide by n_samples to normalize the correlation to [-1, 1]
-        max_corrs[i, :] = np.max(np.abs(lags_ge_zero), axis=1) / n_samples
-
-    # 7. Make the matrix symmetric
-    # Since we want distance(A,B) == distance(B,A), we take the 
-    # maximum correlation found regardless of which signal was 'leading'.
-    max_corrs = np.maximum(max_corrs, max_corrs.T)
-    
-    return 1 - max_corrs
-
-def _cluster_components(ica_stats, n_components=5, n_clusters=3):
-    """
-    Subroutine for grouping top n_components into clusters and heuristics-based assignment.
-    """
-    df = pd.DataFrame(ica_stats).iloc[:n_components]
-    features = ['kurtosis', 'mean_hr', 'snr', 'sdnn', 'hr_outlier_rate', 'num_peaks']
-    
-    # # Clustering 
-    # X = df[['mean_hr']]
-    # scaler = StandardScaler()
-    # X_scaled = scaler.fit_transform(X)
-    # kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    # df['cluster'] = kmeans.fit_predict(X_scaled)
-
-    ica_signals = np.array([e['signal'] for e in ica_stats[:n_components]])
-    cluster_model = AgglomerativeClustering(
-        n_clusters=n_clusters, 
-        metric='precomputed', 
-        linkage='complete'
+    # average the segments from the remaining field measurements after maternal cancelation
+    avg_waveform, std_waveform = avg_channels_hr_range(
+        data,
+        peaks,
+        heartRate,
+        window_size=window_size,
+        denoise=False,
+        plot=plot,
+        min_hr=np.median(heartRate) - bpm_tol,
+        max_hr=np.median(heartRate) + bpm_tol,
+        plt_save=False,
     )
-    df['cluster'] = cluster_model.fit_predict(_lagged_correlation_matrix(ica_signals))
+    topography =  np.array(avg_waveform).T
 
-    # Assign heuristic
-    df_cluster = df.groupby('cluster')[features].agg({'mean_hr': 'mean', 'sdnn': 'min', 'snr': 'max'}).sort_values(['mean_hr', "sdnn", "snr"], ascending=[False, True, False]).reset_index()
-    fetal = df[df.cluster == df_cluster.loc[0].cluster]['index'].iloc[0]
-    maternal = df[df.cluster == df_cluster.loc[1].cluster]['index'].iloc[0]
+    if axis_mask is not None and plot:
+        full_topography = reduced2full(topography, axis_mask)
 
-
-    df['assigned_label'] = df['cluster'].map({
-        df_cluster.loc[0].cluster: 'Fetal',
-        df_cluster.loc[1].cluster: 'Maternal'
-    }).fillna('Other')
-
-    # sanity check
-    # maternal hr should be lower
-    if df[df['index'] == maternal].mean_hr.mean() >= df[df['index'] == fetal].mean_hr.mean():
-        print("Warning: Heuristic assignment may be incorrect based on mean HR. Please review the clustering results.")
-        print(f"Maternal mean HR: {df[df['index'] == maternal].mean_hr.mean()}")
-        print(f"Fetal mean HR: {df[df['index'] == fetal].mean_hr.mean()}")
-    print(df_cluster)
-
-
-    return maternal, fetal, df
-
-
-def select_ica_components(sources, fs, offset=10, plot_span=5, span=5, method="clustering_heuristic", selection=None, clustering_args=None, plot_components=5, plot=False):
-    """"
-    Select ICA components based on heuristics or manual selection.
-    Parameters:
-        sources (ndarray): The ICA source signals of shape (n_samples, n_components).
-        fs (int): Sampling frequency of the signals.
-        offset (float): Time in seconds to start analyzing the components. Default is 10 seconds.
-        plot_span (float): Time in seconds to plot for each component. Default is 5 seconds.
-        span (float): Time in seconds to analyze for each component. Default is 5 seconds.
-        method (str): Method for selecting components. Options are "clustering_heuristic" or "manual". Default is "clustering_heuristic".
-        selection (tuple): If method is "manual", a tuple of (maternal_idx, fetal_idx) specifying the indices of the maternal and fetal components. Default is None.
-        clustering_args (dict): Arguments for clustering when method is "clustering_heuristic". Should include 'n_components' and 'n_clusters'. Default is None.
-        plot_components (int): Number of top components to plot for visualization. Default is 5.
-        plot (bool): Whether to plot the components and their statistics. Default is False.
-    Returns:
-        maternal (int): Index of the selected maternal component.
-        fetal (int): Index of the selected fetal component.
-    """
-    if clustering_args is None:
-        clustering_args = {"n_components": 5, "n_clusters": 3}
-        
-    # 1. Compute stats
-    ica_stats = compute_ICA_statistics(sources, fs, offset=offset, span=span)
-
-    # 2. Assignment
-    if method == "clustering_heuristic":
-        maternal, fetal, df_clustered = _cluster_components(ica_stats, **clustering_args)
-        cluster_assignment = dict(zip(df_clustered['index'], df_clustered['assigned_label']))
-    elif method == "manual":
-        if selection is None or len(selection) != 2:
-            maternal, fetal = (None, None)
-        cluster_assignment = {}
-    else:
-        raise ValueError(f"Unknown method {method}")
-
-    # 3. Visualization
-    if plot:
-        stats_list = ica_stats[:plot_components]
-        fig, axes = plt.subplots(
-            plot_components, 1, 
-            sharex=True, 
-            figsize=(12, 1.5 * plot_components), 
-            dpi=100
+        plot_sensor_signals(
+            full_topography,
+            np.arange(full_topography.shape[0]) / fs,
+            ylabel="Reconstructed Field [pT]",
+            xlim=[0, full_topography.shape[0] / fs],
+            sharey=True,
         )
-        if plot_components == 1: axes = [axes]
-        
-        for i, comp in enumerate(stats_list):
-            ax = axes[i]
-            sig = comp['signal'][:int(plot_span*fs)]
-            pks = comp['peaks']
-            pks = pks[pks < int(plot_span*fs)]
-            idx = comp['index']
-            
-            # Determine coloring
-            edge_color = 'lightgrey'
-            title_suffix = ""
-            is_selected = False
-            
-            if idx == maternal:
-                title_suffix = " (Maternal)"
-                is_selected = True
-                edge_color = 'tab:blue'
-                line_color = 'tab:blue'
-            elif idx == fetal:
-                title_suffix = " (Fetal)"
-                is_selected = True
-                edge_color = 'tab:red'
-                line_color = 'tab:red'
-            else:
-                line_color = 'tab:grey'
-            
-            # Plot Signal
-            time_axis = np.arange(plot_span*fs) / fs
-            ax.plot(time_axis, sig, label=f"Comp {idx}", color=line_color, lw=1)
-            
-            # Plot Peaks
-            if len(pks) > 0:
-                ax.plot(pks / fs, sig[pks], "rx", markersize=7, label="Peaks")
+    if axis_mask is None and plot:
+        raise ValueError("To plot the topography, please provide an axis_mask indicating the sensor locations.")
 
-            # Annotation Box
-            stats_text = (f"SDNN: {comp['sdnn']:.2f} ms\n"
-                          f"Kurt: {comp['kurtosis']:.2f}\n"
-                          f"SNR: {comp['snr']:.2f} dB\n"
-                          f"Mean HR: {comp['mean_hr']:.2f} BPM\n"
-                          f"Num Peaks: {len(pks)}\n"
-                          f"HR Outlier Rate: {comp['hr_outlier_rate']:.2f}")
-            
-            ax.text(1.01, 0.5, stats_text, transform=ax.transAxes, 
-                    va='center', fontsize=9, bbox=dict(facecolor='white', alpha=0.5))
-            
-            # Title
-            title_str = f"ICA Component {idx}"
-            if method == "clustering_heuristic" and idx in cluster_assignment:
-                title_str += f" - Cluster {cluster_assignment[idx]}"
-            title_str += title_suffix
-            
-            ax.set_title(title_str, fontsize=12, fontweight='bold' if is_selected else 'normal')
-            ax.set_ylabel("Amplitude")
-            ax.legend(loc="upper right", fontsize=8)
-            ax.grid(True, linestyle="--", alpha=0.5)
+    return topography
 
-            # Highlight selected components with explicit edging
-            if is_selected:
-                for spine in ax.spines.values():
-                    spine.set_edgecolor(edge_color)
-                    spine.set_linewidth(3)
+def lmmse(data, topography):
+    # LMMSE Filter C_T / C_S
+    signal_cov = np.cov(data.T)
+    U, S, _ = np.linalg.svd(signal_cov, hermitian=True)
+    W = np.cov(topography.T) @ U @ np.diag(1/S) @ U.T
 
-        axes[-1].set_xlabel("Time [s]")
-        plt.suptitle("ICA Components Selection", fontsize=14, y=1.02)
-        plt.tight_layout(rect=[0, 0, 0.88, 1])
-        plt.show()
+    return data @ W.T
 
-    return maternal, fetal, cluster_assignment
+def ssp(data, topography, k=None, explained_variance=None):
+    if k is not None and explained_variance is not None:
+        raise ValueError("Please provide either `k` or `explained_variance`, not both.")
+    if k is None and explained_variance is None:
+        raise ValueError("Please provide either `k` or `explained_variance`.")
 
+    # SSP Filter
+    template = np.cov(topography.T)
+    U, S, _ = np.linalg.svd(template, hermitian=True)
+    explained_variance_by_component = S / np.sum(S)
+    
+    with np.printoptions(precision=2, floatmode="fixed", suppress=True):
+        print(f"Explained Variance by each component: {explained_variance_by_component*100}%")
+        print(f"Cumulative Explained Variance: {np.cumsum(explained_variance_by_component)*100}%")
+        print(f"Rank of template covariance: {np.linalg.matrix_rank(template)}")
+    if k is None:
+        k = np.searchsorted(np.cumsum(explained_variance_by_component), explained_variance) + 1
+        print(f"Selected number of components: {k}, explaining {np.cumsum(explained_variance_by_component)[k-1]*100: .2f}% of variance")
 
-def plot_similarity_with_energy_context(Um, Uf, Lambda_m, Lambda_f,
+    W = np.eye(U.shape[0]) - (U[:, :k] @ U[:, :k].T)
+    
+    return data @ W.T
+
+def plot_similarity_with_energy_context(topography_m, topography_f,
                                               k_m=None, k_f=None,
                                               metric='angle',
                                               names=['Maternal', 'Fetal']):
     # 1. Setup & Computations
     if k_m is None: k_m = Um.shape[1]
     if k_f is None: k_f = Uf.shape[1]
+
+    # Get eigenvectors from covariance matrices
+    # Assuming avg_waveform_m shape: (n_sensors, n_timepoints)
+    Cm = np.cov(topography_m.T)
+    Cf = np.cov(topography_f.T)
+
+    # Eigendecomposition (sorted by eigenvalue)
+    eigenvalues_m, eigenvectors_m = np.linalg.eigh(Cm)
+    eigenvalues_f, eigenvectors_f = np.linalg.eigh(Cf)
+
+    # Sort descending
+    idx_m = np.argsort(eigenvalues_m)[::-1]
+    idx_f = np.argsort(eigenvalues_f)[::-1]
+
+    Um = eigenvectors_m[:, idx_m]  # shape: (n_sensors, n_sensors)
+    Uf = eigenvectors_f[:, idx_f]
+    Lambda_m = eigenvalues_m[idx_m]
+    Lambda_f = eigenvalues_f[idx_f]
     
     Um_k, Uf_k = Um[:, :k_m], Uf[:, :k_f]
     Lambda_m_k, Lambda_f_k = Lambda_m[:k_m], Lambda_f[:k_f]

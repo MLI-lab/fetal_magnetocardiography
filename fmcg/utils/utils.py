@@ -14,6 +14,12 @@ import tqdm
 import torch
 import torch.nn as torch_nn
 
+def reduced2full(field, axis_mask):
+    full_field = np.ones((field.shape[0], *axis_mask.shape)) * np.nan
+    full_field[:, axis_mask] = field
+    return full_field
+
+
 def get_config_for_date(date_str):
     # 1. Clean and parse the date safely
     # Removes non-numeric prefix characters like 'v2025...' or ' 2025...'

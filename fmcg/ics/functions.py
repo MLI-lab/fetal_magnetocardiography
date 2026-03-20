@@ -10,13 +10,11 @@ Implementation of a splined independent component subtraction approach for mater
 
 import numpy as np
 from sklearn.decomposition import FastICA
-from scipy.signal import find_peaks
 from scipy.stats import kurtosis
 import neurokit2 as nk
 import matplotlib.pyplot as plt
 from copy import deepcopy
 import pywt
-from scipy.interpolate import CubicSpline
 import logging
 
 logger = logging.getLogger(__name__)
@@ -179,7 +177,7 @@ def plotHR(signal, compF=None, fs=1000, minBpm=-1, maxBpm=-1, plot=True):
         # Customize the plot
         plt.xlabel("Beat Number")
         plt.ylabel(f"Heart Rate (BPM)")
-        plt.title(f"Heart Rate avg = {avg:.2f} - Fetal")
+        plt.title(f"Heart Rate avg = {avg:.2f}")
         plt.grid(True, linestyle="--", alpha=0.9)
 
         num_ticks = 30  # Adjust this number to control how many ticks you want
@@ -198,49 +196,6 @@ def plotHR(signal, compF=None, fs=1000, minBpm=-1, maxBpm=-1, plot=True):
         plt.show()
 
     return heart_rates[valid_indices], peaks
-
-
-def upDownSample(
-    maternal, maternal_indices, downsample_factor_qrs=5, downsample_factor_other=20
-):
-    maternal_matrix = deepcopy(maternal)
-    for index in maternal_indices:
-        candidate = maternal_matrix[:, index]
-        peak_indices, _ = find_peaks(np.abs(candidate), distance=400, prominence=2)
-
-        # Create a mask for downsampling
-        downsample_mask = np.zeros_like(candidate, dtype=bool)
-
-        for peak in peak_indices:
-            start_qrs = max(0, peak - 50)
-            end_qrs = min(len(candidate), peak + 50)
-            downsample_mask[start_qrs:end_qrs] = True
-
-        # Downsample
-        downsampled_signal = []
-        indices = []
-        for i in range(len(candidate)):
-            if downsample_mask[i]:
-                if i % downsample_factor_qrs == 0:
-                    downsampled_signal.append(candidate[i])
-                    indices.append(i)
-            else:
-                if i % downsample_factor_other == 0:
-                    downsampled_signal.append(candidate[i])
-                    indices.append(i)
-
-        # Convert to numpy arrays
-        downsampled_signal = np.array(downsampled_signal)
-        indices = np.array(indices)
-
-        # Perform cubic spline interpolation
-        cs = CubicSpline(indices, downsampled_signal)
-        upsampled_signal = cs(np.arange(len(candidate)))
-
-        # Replace the original signal with the upsampled signal
-        maternal_matrix[:, index] = upsampled_signal
-
-    return maternal_matrix
 
 
 def identify_hr_range_segments(

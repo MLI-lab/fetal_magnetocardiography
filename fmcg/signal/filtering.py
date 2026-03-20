@@ -12,6 +12,12 @@ from sklearn.linear_model import LinearRegression
 
 logger = logging.getLogger(__name__)
 
+def filternk(sig, fs, method="biosppy", **kwargs):
+    """ Apply bandpass and notch filters using neurokit2's ecg_clean function. """
+    sig_filt = sig.copy()
+    for i in range(sig.shape[1]):
+        sig_filt[:, i] = nk.ecg_clean(sig[:, i], sampling_frequency=fs, method=method, **kwargs)
+    return sig_filt
 
 def filter_sensor_dict(grid, fs, low=0.5, high=40, order=6, notch=True):
     """
