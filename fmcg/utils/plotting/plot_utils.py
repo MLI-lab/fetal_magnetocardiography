@@ -23,6 +23,35 @@ _WAVE_COLORS = {
     "Baseline": "tab:grey",
 }
 
+# Maps LUDB-style integer labels (0=background, 1=P, 2=QRS/N, 3=T) to wave names
+_LABEL_TO_WAVE = {1: "P-wave", 2: "R-wave", 3: "T-wave"}
+
+
+def _encoded_labels_to_segments(labels):
+    """Convert a 1-D integer label array to the segments dict used by _render_vcg_3d_loop.
+
+    Parameters
+    ----------
+    labels : array-like of int
+        Per-sample labels. 0 = background; 1 = P-wave; 2 = QRS/R-wave; 3 = T-wave
+        (matches LUDB ``_SYMBOL_TO_LABEL`` convention).
+
+    Returns
+    -------
+    dict
+        ``{"wave-name": (start_indices, end_indices)}`` suitable for
+        ``_render_vcg_3d_loop``.
+    """
+    labels = np.asarray(labels, dtype=int)
+    segments = {}
+    for code, wave in _LABEL_TO_WAVE.items():
+        mask = (labels == code).astype(int)
+        starts = np.where(np.diff(np.concatenate(([0], mask))) == 1)[0]
+        ends = np.where(np.diff(np.concatenate((mask, [0]))) == -1)[0] + 1
+        if len(starts):
+            segments[wave] = (starts, ends)
+    return segments
+
 
 def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]", preprocess=False, preprocess_method="vg"):
     if time is None:
@@ -651,6 +680,8 @@ def _render_vcg_3d_loop(
     show_projections=True,
     show_r_peak_arrow=False,
     labels=None,
+    azim=210,
+    elev=30
 ):
     """Render a 3D VCG loop onto an existing 3D axis.
 
@@ -676,9 +707,17 @@ def _render_vcg_3d_loop(
         ``rpeaks`` is not ``None``).
     labels : list of str
         Axis labels [x, y, z].
+    azim : float
+        Azimuth angle for 3D view.
+    elev : float
+        Elevation angle for 3D view.
+    
     """
     if labels is None:
         labels = ["x", "y", "z"]
+
+    if segments is not None and not isinstance(segments, dict):
+        segments = _encoded_labels_to_segments(segments)
 
     if segments is not None:
         ax.plot(signals[:N, 0], signals[:N, 1], signals[:N, 2], color=_WAVE_COLORS["Baseline"])
@@ -738,7 +777,7 @@ def _render_vcg_3d_loop(
     ax.set_ylabel(labels[1], labelpad=-2)
     ax.set_zlabel(labels[2], labelpad=-2)
     ax.tick_params(pad=0)
-    ax.view_init(azim=210, elev=30)
+    ax.view_init(azim=azim, elev=elev)
     ax.zaxis.labelpad = -2
 
 
@@ -861,6 +900,8 @@ def plot_vcg_loop(
     show_r_peak_arrow=True,
     figsize=(3.5, 3.5),
     dpi=300,
+    azim=210,
+    elev=30
 ):
     """Plot a standalone 3D VCG vector loop.
 
@@ -902,6 +943,10 @@ def plot_vcg_loop(
         Figure size in inches.
     dpi : int
         Figure DPI.
+    azim : float
+        Azimuth angle for 3D view.
+    elev : float
+        Elevation angle for 3D view.
 
     Returns
     -------
@@ -950,6 +995,8 @@ def plot_vcg_loop(
         show_projections=show_projections,
         show_r_peak_arrow=show_r_peak_arrow,
         labels=labels,
+        azim=azim,
+        elev=elev
     )
     ax.set_title(f"{sig_name} Loop", pad=0)
 
@@ -957,8 +1004,8 @@ def plot_vcg_loop(
     if savename is not None:
         plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0)
         plt.close(fig)
-    else:
-        plt.show()
+    # else:
+    #     plt.show()
 
     return fig, ax
 
