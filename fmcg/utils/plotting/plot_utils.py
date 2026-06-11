@@ -14,6 +14,15 @@ logger = logging.getLogger(__name__)
 
 COORDINATE_IMAGE = os.path.join(os.path.dirname(__file__), "coordinates.png")
 
+_WAVE_COLORS = {
+    "P-wave":   "tab:blue",
+    "Q-wave":   "tab:orange",
+    "R-wave":   "tab:red",
+    "S-wave":   "tab:green",
+    "T-wave":   "tab:purple",
+    "Baseline": "tab:grey",
+}
+
 
 def plot_magnetic_moments(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]", preprocess=False, preprocess_method="vg"):
     if time is None:
@@ -633,6 +642,106 @@ def draw_system(
         plt.show()
 
 
+def _render_vcg_3d_loop(
+    ax,
+    signals,
+    N,
+    segments=None,
+    rpeaks=None,
+    show_projections=True,
+    show_r_peak_arrow=False,
+    labels=None,
+):
+    """Render a 3D VCG loop onto an existing 3D axis.
+
+    Parameters
+    ----------
+    ax : Axes3D
+        Target 3D axis.
+    signals : ndarray, shape (T, 3)
+        Cardiac vector time series.
+    N : int
+        Number of samples to render.
+    segments : dict, optional
+        ``{"wave-name": (start_indices, end_indices)}`` mapping. When provided
+        the full trajectory is drawn in baseline grey and each wave segment is
+        overlaid in its wave color. When ``None`` the trajectory is drawn as a
+        plain ``C0`` line with no coloring.
+    rpeaks : dict, optional
+        ``{"ECG_R_Peaks": array}`` used for the cardinal-vector arrow.
+    show_projections : bool
+        Draw orthogonal shadow projections onto the bounding-box side planes.
+    show_r_peak_arrow : bool
+        Draw a quiver arrow from the origin to the R-peak position (only when
+        ``rpeaks`` is not ``None``).
+    labels : list of str
+        Axis labels [x, y, z].
+    """
+    if labels is None:
+        labels = ["x", "y", "z"]
+
+    if segments is not None:
+        ax.plot(signals[:N, 0], signals[:N, 1], signals[:N, 2], color=_WAVE_COLORS["Baseline"])
+        for wave, (start_vals, end_vals) in segments.items():
+            for s_idx, e_idx in zip(start_vals, end_vals):
+                if (
+                    not np.isnan(s_idx)
+                    and not np.isnan(e_idx)
+                    and int(s_idx) < N
+                    and int(e_idx) < N
+                ):
+                    ax.plot(
+                        signals[int(s_idx):int(e_idx), 0],
+                        signals[int(s_idx):int(e_idx), 1],
+                        signals[int(s_idx):int(e_idx), 2],
+                        color=_WAVE_COLORS.get(wave, "tab:grey"),
+                    )
+    else:
+        ax.plot(signals[:N, 0], signals[:N, 1], signals[:N, 2], color="C0")
+
+    if show_projections:
+        ax.plot(
+            signals[:N, 0], signals[:N, 1],
+            zs=ax.get_zlim()[0] * 0.95, zdir="z",
+            color="gray", linestyle="-", alpha=0.3, axlim_clip=True,
+        )
+        ax.plot(
+            signals[:N, 0], signals[:N, 2],
+            zs=ax.get_ylim()[1] * 1.05, zdir="y",
+            color="gray", linestyle="-", alpha=0.3, axlim_clip=True,
+        )
+        ax.plot(
+            signals[:N, 1], signals[:N, 2],
+            zs=ax.get_xlim()[1] * 1.05, zdir="x",
+            color="gray", linestyle="-", alpha=0.3, axlim_clip=True,
+        )
+
+    if show_r_peak_arrow and rpeaks is not None:
+        ax.scatter(0, 0, 0, c="k", marker="x", label="Origin")
+        r_peak_idx = rpeaks["ECG_R_Peaks"][1]
+        if r_peak_idx < N:
+            r_peak_vals = signals[r_peak_idx, :]
+            ax.quiver(
+                0, 0, 0,
+                r_peak_vals[0], r_peak_vals[1], r_peak_vals[2],
+                color="k",
+                arrow_length_ratio=0.1,
+                label="R Peak Arrow",
+                linewidths=1.5,
+            )
+            ax.text(
+                r_peak_vals[0], r_peak_vals[1], r_peak_vals[2] + 0.1,
+                "Cardiac Vector", color="k", fontsize=10, weight="bold",
+            )
+
+    ax.set_xlabel(labels[0], labelpad=-2)
+    ax.set_ylabel(labels[1], labelpad=-2)
+    ax.set_zlabel(labels[2], labelpad=-2)
+    ax.tick_params(pad=0)
+    ax.view_init(azim=210, elev=30)
+    ax.zaxis.labelpad = -2
+
+
 def plot_vcg(
     filtered_signals,
     ecg=None,
@@ -673,15 +782,6 @@ def plot_vcg(
             "T-wave": (waves["ECG_T_Onsets"], waves["ECG_T_Offsets"]),
             "Baseline": (waves["ECG_T_Offsets"][:-1], waves["ECG_P_Onsets"][1:]),
         }
-    colors = {
-        "P-wave": "tab:blue",
-        "Q-wave": "tab:orange",
-        "R-wave": "tab:red",
-        "S-wave": "tab:green",
-        "T-wave": "tab:purple",
-        "Baseline": "tab:grey",
-    }
-
     fig = plt.figure(figsize=(7.11, 3.5), dpi=500)
     gs = gridspec.GridSpec(4, 2, width_ratios=[2, 3], height_ratios=[1, 1, 1, 1])
 
@@ -697,94 +797,14 @@ def plot_vcg(
 
     # 3D plot on the left, spanning the top three rows
     ax = fig.add_subplot(gs[:3, 0], projection="3d")
-    ax.plot(
-        filtered_signals[:N, 0],
-        filtered_signals[:N, 1],
-        filtered_signals[:N, 2],
-        color=colors["Baseline"],
+    _render_vcg_3d_loop(
+        ax, filtered_signals, N,
+        segments=segments,
+        rpeaks=rpeaks,
+        show_projections=True,
+        show_r_peak_arrow=True,
+        labels=labels,
     )
-    # Plot projections on the side planes
-    ax.plot(
-        filtered_signals[:N, 0],
-        filtered_signals[:N, 1],
-        zs=ax.get_zlim()[0] * 0.95,
-        zdir="z",
-        color="gray",
-        linestyle="-",
-        alpha=0.3,
-        axlim_clip=True,
-    )
-    ax.plot(
-        filtered_signals[:N, 0],
-        filtered_signals[:N, 2],
-        zs=ax.get_ylim()[1] * 1.05,
-        zdir="y",
-        color="gray",
-        linestyle="-",
-        alpha=0.3,
-        axlim_clip=True,
-    )
-    ax.plot(
-        filtered_signals[:N, 1],
-        filtered_signals[:N, 2],
-        zs=ax.get_xlim()[1] * 1.05,
-        zdir="x",
-        color="gray",
-        linestyle="-",
-        alpha=0.3,
-        axlim_clip=True,
-    )
-
-    for wave, (start_vals, end_vals) in segments.items():
-        for s_idx, e_idx in zip(start_vals, end_vals):
-            if (
-                not np.isnan(s_idx)
-                and not np.isnan(e_idx)
-                and int(s_idx) < N
-                and int(e_idx) < N
-            ):
-                ax.plot(
-                    filtered_signals[int(s_idx) : int(e_idx), 0],
-                    filtered_signals[int(s_idx) : int(e_idx), 1],
-                    filtered_signals[int(s_idx) : int(e_idx), 2],
-                    color=colors[wave],
-                )
-
-    # Origin marker
-    if rpeaks is not None:
-        ax.scatter(0, 0, 0, c="k", marker="x", label="Origin")
-        r_peak_idx = rpeaks["ECG_R_Peaks"][1]
-        r_peak_vals = filtered_signals[r_peak_idx, :]
-        ax.quiver(
-            0,
-            0,
-            0,
-            r_peak_vals[0],
-            r_peak_vals[1],
-            r_peak_vals[2],
-            color="k",
-            arrow_length_ratio=0.1,
-            label="R Peak Arrow",
-            linewidths=1.5,
-        )
-        ax.text(
-            r_peak_vals[0],
-            r_peak_vals[1],
-            r_peak_vals[2] + 0.1,
-            "Cardiac Vector",
-            color="k",
-            fontsize=10,
-            weight="bold",
-        )
-
-    ax.set_xlabel(labels[0], labelpad=-2)
-    ax.set_ylabel(labels[1], labelpad=-2)
-    ax.set_zlabel(labels[2], labelpad=-2)
-    # ax.set_title("{sig_name} Loop", pad=0)
-    ax.tick_params(pad=0)
-    # plt_config.set_axes_equal(ax)
-    ax.view_init(azim=210, elev=30)
-    ax.zaxis.labelpad = -2
 
     # Create subplots on the right
     axs = [fig.add_subplot(gs[i, 1]) for i in range(3)]
@@ -792,7 +812,7 @@ def plot_vcg(
         [rf"{sig_name}$_x$", rf"{sig_name}$_y$", rf"{sig_name}$_z$"]
     ):
         axs[i].plot(
-            time[: int(N)], filtered_signals[: int(N), i], color=colors["Baseline"]
+            time[: int(N)], filtered_signals[: int(N), i], color=_WAVE_COLORS["Baseline"]
         )
         for wave, (start_vals, end_vals) in segments.items():
             for s_idx, e_idx in zip(start_vals, end_vals):
@@ -805,7 +825,7 @@ def plot_vcg(
                     axs[i].plot(
                         time[int(s_idx) : int(e_idx)],
                         filtered_signals[int(s_idx) : int(e_idx), i],
-                        color=colors[wave],
+                        color=_WAVE_COLORS.get(wave, "tab:grey"),
                         label=wave if s_idx == start_vals[0] else "",
                     )
 
@@ -825,7 +845,125 @@ def plot_vcg(
         plt.show()
 
 
-def plot_vector_loop(
+def plot_vcg_loop(
+    signals,
+    segments=None,
+    ecg=None,
+    rpeaks=None,
+    fs=1000,
+    fetal_downsample_factor=1,
+    N=None,
+    sig_name="VCG",
+    labels=None,
+    savename=None,
+    plt_HS_coor=True,
+    show_projections=True,
+    show_r_peak_arrow=True,
+    figsize=(3.5, 3.5),
+    dpi=300,
+):
+    """Plot a standalone 3D VCG vector loop.
+
+    Parameters
+    ----------
+    signals : ndarray, shape (T, 3)
+        Cardiac vector time series [x, y, z].
+    segments : dict, optional
+        Pre-computed wave segments ``{"P-wave": (start_indices, end_indices), ...}``.
+        When provided, the loop is colour-coded by wave type and ``ecg`` is not used
+        for delineation (though ``ecg`` can still be used for R-peak detection when
+        ``rpeaks`` is also ``None`` and ``show_r_peak_arrow`` is ``True``).
+    ecg : array, optional
+        Raw ECG signal.  Used to auto-detect ``segments`` (via neurokit2) when
+        ``segments`` is ``None``, and to find R-peaks for the cardinal-vector arrow.
+    rpeaks : dict, optional
+        Pre-computed ``{"ECG_R_Peaks": array}`` to use for the arrow directly,
+        skipping neurokit2 peak detection.
+    fs : int
+        Sampling frequency in Hz.
+    fetal_downsample_factor : int
+        Downsample factor applied before passing to neurokit2 (same as ``plot_vcg``).
+    N : int, optional
+        Number of samples to render.  Defaults to 3 seconds worth.
+    sig_name : str
+        Signal name used in the figure title.
+    labels : list of str
+        Axis labels [x, y, z].
+    savename : str, optional
+        Save path.  If ``None`` the figure is displayed interactively.
+    plt_HS_coor : bool
+        Show the Heart Shield coordinate system image inset.
+    show_projections : bool
+        Draw orthogonal shadow projections onto the bounding-box side planes.
+    show_r_peak_arrow : bool
+        Draw the cardinal-vector quiver arrow at the R-peak.  Only drawn when
+        R-peak information is available (via ``rpeaks`` or ``ecg``).
+    figsize : tuple
+        Figure size in inches.
+    dpi : int
+        Figure DPI.
+
+    Returns
+    -------
+    fig : Figure
+    ax : Axes3D
+    """
+    if labels is None:
+        labels = ["x", "y", "z"]
+
+    if N is None:
+        N = min(int(3 * fs), len(signals))
+
+    # Resolve segmentation and R-peaks
+    if segments is None and ecg is not None:
+        cleaned = nk.ecg_clean(ecg, sampling_rate=int(fs / fetal_downsample_factor), method="vg")
+        _, rpeaks = nk.ecg_peaks(cleaned, sampling_rate=int(fs / fetal_downsample_factor), method="vg")
+        s, waves = nk.ecg_delineate(
+            cleaned, rpeaks, sampling_rate=int(fs / fetal_downsample_factor), method="dwt"
+        )
+        segments = {
+            "P-wave":   (waves["ECG_P_Onsets"],       waves["ECG_P_Offsets"]),
+            "Q-wave":   (waves["ECG_P_Offsets"],       waves["ECG_Q_Peaks"]),
+            "R-wave":   (waves["ECG_Q_Peaks"],         waves["ECG_S_Peaks"]),
+            "S-wave":   (waves["ECG_S_Peaks"],         waves["ECG_T_Onsets"]),
+            "T-wave":   (waves["ECG_T_Onsets"],        waves["ECG_T_Offsets"]),
+            "Baseline": (waves["ECG_T_Offsets"][:-1],  waves["ECG_P_Onsets"][1:]),
+        }
+
+    fig = plt.figure(figsize=figsize, dpi=dpi)
+
+    if plt_HS_coor:
+        try:
+            image = plt.imread(COORDINATE_IMAGE)
+            image = np.rot90(image, k=3)
+            ax_img = plt.axes([0.00, 0.15, 0.2, 0.2], frameon=True, zorder=999)
+            ax_img.imshow(image)
+            ax_img.axis("off")
+        except Exception:
+            logger.warning("Could not load coordinate system image")
+
+    ax = fig.add_subplot(111, projection="3d")
+    _render_vcg_3d_loop(
+        ax, signals, N,
+        segments=segments,
+        rpeaks=rpeaks,
+        show_projections=show_projections,
+        show_r_peak_arrow=show_r_peak_arrow,
+        labels=labels,
+    )
+    ax.set_title(f"{sig_name} Loop", pad=0)
+
+    plt.tight_layout()
+    if savename is not None:
+        plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0)
+        plt.close(fig)
+    else:
+        plt.show()
+
+    return fig, ax
+
+
+def plot_dipole_trajectory(
     m_true,
     r_true,
     m_pred,

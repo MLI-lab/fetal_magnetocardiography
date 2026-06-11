@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.signal import decimate, resample
 
-from fmcg.utils.data import load_vcg_data
+from fmcg.data import load_vcg_data
 from fmcg.utils import utils
 from fmcg.utils.utils import rot
 from fmcg.fitting.field_model import ForwardModel

@@ -15,78 +15,21 @@ from fmcg.signal.artifact_removal import remove_outlier_dict
 from fmcg.signal.filtering import filter_sensor_dict
 from fmcg.signal.whitening import apply_whitening
 
-from .plotting import plot_utils
 from .utils import get_config_for_date
 
 logger = logging.getLogger(__name__)
 
-def load_vcg_data(
-    record="patient104/s0306lre", base_path=None, plot=False
-):
-    """
-    Load and preprocess VCG (Vectorcardiogram) data from a specified record.
-
-    Parameters:
-        record (str): The path to the record file within the dataset. Default is "patient104/s0306lre".
-        base_path (str): The base path to the dataset directory. Required parameter - must point to your local ptbdb dataset directory.
-        plot (bool): If True, plots the VCG signals using plot_utils. Default is False.
-
-    Returns:
-        tuple: A tuple containing:
-            - filtered_signals (ndarray): The bandpass filtered VCG signals.
-            - ecg_II (ndarray): The ECG lead II signal.
-            - fs (int): The sampling frequency of the record.
-    """
-    # If no local base path is provided, try to load the record from the
-    # PhysioNet-hosted PTB-DB. Otherwise read from the provided local path.
-    if base_path is None:
-        # Load record from the PhysioNet-hosted PTB Diagnostic ECG Database.
-        # Database URL: https://physionet.org/content/ptbdb/1.0.0/
-        # wfdb strips directory components from record_name, so we need to
-        # include any subdirectory (e.g., "patient104") in pn_dir.
-        record_dir = os.path.dirname(record)  # e.g., "patient104"
-        record_base = os.path.basename(record)  # e.g., "s0306lre"
-        if record_dir:
-            pn_dir = f"ptbdb/1.0.0/{record_dir}"
-        else:
-            pn_dir = "ptbdb/1.0.0"
-        try:
-            record = wfdb.rdrecord(record_base, physical=True, pn_dir=pn_dir)
-        except Exception as e:
-            logger.warning(
-                "Failed to load record '%s' from PhysioNet (pn_dir=%s): %s",
-                record_base, pn_dir, e
-            )
-            raise ValueError(
-                f"Could not load record '{record}' from PhysioNet. "
-                "Provide a local base_path or check the record name. "
-                f"Error: {e}"
-            ) from e
-    else:
-        record = wfdb.rdrecord(f"{base_path}/{record}", physical=True)
-    fs = record.fs
-
-    # retrieve ordered indices of the signals in the record
-    indices = np.argsort(np.argsort(["vx", "vy", "vz"]))
-    sorted_indices = np.where(np.in1d(record.sig_name, ["vx", "vy", "vz"]))[0][indices]
-
-    # retrieve the signals
-    signals = record.p_signal[:, sorted_indices]
-
-    ecg_II = record.p_signal[:, 1]
-
-    # Bandpass filter the signals
-    lowcut = 0.5
-    highcut = 40.0
-    nyquist = 0.5 * fs
-    low = lowcut / nyquist
-    high = highcut / nyquist
-    b, a = butter(4, [low, high], btype="band")
-    filtered_signals = filtfilt(b, a, signals, axis=0)
-
-    if plot:
-        plot_utils.plot_vcg(filtered_signals, ecg_II, fs)
-    return filtered_signals, ecg_II, fs
+def load_vcg_data(record="patient104/s0306lre", base_path=None, plot=False):
+    """Deprecated. Use ``fmcg.data.load_vcg_data`` instead."""
+    import warnings
+    warnings.warn(
+        "load_vcg_data has moved to fmcg.data.ptbdb. "
+        "Update your import to: from fmcg.data import load_vcg_data",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from fmcg.data.ptbdb import load_vcg_data as _f
+    return _f(record=record, base_path=base_path, plot=plot)
 
 
 def load_structured_patient_data_and_noise(
