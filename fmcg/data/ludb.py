@@ -1,16 +1,41 @@
-"""Loader for the LUDB (Lobachevsky University ECG Database)."""
+"""Loader for the Lobachevsky University ECG Database (LUDB)."""
 
 import glob
 import os
 import warnings
 from typing import Optional
 
+import numpy as np
 import wfdb
 
 from .utils import annotations_to_mask
 
 # LUDB annotation symbols
 _SYMBOL_TO_LABEL = {"p": 1, "N": 2, "t": 3}  # P=1, QRS=2, T=3; 0=background
+
+
+def _extract_r_peaks(data_path: str, record_name: str, lead_names: list) -> np.ndarray:
+    """Return R-peak sample indices from LUDB annotations (the 'N' symbol).
+
+    Collects 'N' samples across all leads and collapses per-lead jitter
+    (< 5 samples) to a single median position per beat.
+    """
+    all_samples = []
+    for lead in lead_names:
+        try:
+            ann = wfdb.rdann(os.path.join(data_path, record_name), extension=lead)
+        except Exception:
+            continue
+        all_samples.extend(s for sym, s in zip(ann.symbol, ann.sample) if sym == "N")
+
+    if not all_samples:
+        return np.array([], dtype=int)
+
+    samples = np.sort(all_samples)
+    gaps = np.diff(samples)
+    breaks = np.where(gaps > 15)[0] + 1
+    clusters = np.split(samples, breaks)
+    return np.array([int(np.median(c)) for c in clusters], dtype=int)
 
 
 def load_ludb(data_path: str, records: Optional[list] = None, max_records: Optional[int] = None) -> list[dict]:
@@ -55,6 +80,8 @@ def load_ludb(data_path: str, records: Optional[list] = None, max_records: Optio
             annotations = _parse_annotations(data_path, name, lead_names)
             labels = annotations_to_mask(signal.shape[0], signal.shape[1], annotations)
 
+            r_peaks = _extract_r_peaks(data_path, name, lead_names)
+
             out.append(
                 {
                     "signal": signal,
@@ -62,6 +89,7 @@ def load_ludb(data_path: str, records: Optional[list] = None, max_records: Optio
                     "record_name": name,
                     "fs": rec.fs,
                     "lead_names": lead_names,
+                    "r_peaks": r_peaks,
                 }
             )
         except Exception as e:
