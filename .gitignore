@@ -1,0 +1,10 @@
+*.egg-info/
+*.pyc
+__pycache__/
+.coverage
+htmlcov/
+data/*
+examples/output/*
+examples/_ica_annotation/*
+CLAUDE.md
+.gitignore
