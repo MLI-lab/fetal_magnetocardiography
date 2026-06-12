@@ -331,7 +331,7 @@ def _find_best_hr_estimate(signal, comps, fs):
     return detect_peaks(target_signal, fs), comps
 
 
-def _plot_hr(heart_rate, title="", ylabel="Heart Rate [BPM]", ax=None):
+def _plot_hr(heart_rate, title="", ylabel="Heart Rate [BPM]", ax=None, label=None, color="tab:green"):
     """Internal helper for visualization."""
     if ax is None:
         fig = plt.figure(figsize=(7.11, 3), dpi=300)
@@ -346,14 +346,14 @@ def _plot_hr(heart_rate, title="", ylabel="Heart Rate [BPM]", ax=None):
         x_positions,
         heart_rate,
         ".-",
-        label=ylabel,
+        label=label,
         color="k",
         fillstyle="none",
         linewidth=0.75,
     )
 
     # Highlight points
-    ax.plot(x_positions, heart_rate, ".", color="tab:green", markersize=2)
+    ax.plot(x_positions, heart_rate, ".", color=color, markersize=2)
 
     # Styling
     ax.set_xlabel("Time [s]")

@@ -353,8 +353,13 @@ def extract_epochs(signal, peaks, fs, ratio_pre=0.5, interval=2.5):
     epochs = np.array([signal[p - left_offset : p + right_offset] for p in valid_peaks])
 
     # remove epochs with NaN values (if any)
+    if signal.ndim == 1:
+        epochs = epochs[:, :, np.newaxis]
     valid_epochs_mask = ~np.isnan(epochs).any(axis=(1, 2))
     epochs = epochs[valid_epochs_mask]
+
+    if signal.ndim == 1:
+        epochs = epochs.squeeze(-1)
 
     # Time axis calculation
     # If no epochs were extracted, create a sensible time_axis based on
