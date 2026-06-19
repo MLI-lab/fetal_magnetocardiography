@@ -583,10 +583,10 @@ def generate_synthetic_fmcg_recording(
     vcg_dataset_path=None,
     # Position sampling
     fetal_pos_baseline=np.array([0.0, -0.05, 0.0]),
-    maternal_pos_baseline=np.array([0.0, -0.05, 0.35]),
-    fetal_pos_bounds=np.array([[-0.15, 0.15], [-0.15, 0.0], [-0.15, 0.15]]),
-    maternal_pos_bounds=np.array([[-0.15, 0.15], [-0.15, 0.0], [0.15, 0.6]]),
-    position_sampling_sigma=0.03,
+    maternal_pos_baseline=np.array([0.0, -0.05, 0.15]),
+    fetal_pos_bounds=np.array([[-0.05, 0.15], [-0.05, 0.0], [-0.05, 0.05]]),
+    maternal_pos_bounds=np.array([[-0.1, 0.15], [-0.1, 0.0], [0.1, 0.3]]),
+    position_sampling_sigma=0.02,
     min_separation=0.05,
     # Dipole movement
     enable_movement=False,

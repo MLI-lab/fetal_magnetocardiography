@@ -3,7 +3,7 @@
 __pycache__/
 .coverage
 htmlcov/
-data/*
+data/P*
 examples/output/*
 examples/_ica_annotation/*
 CLAUDE.md
