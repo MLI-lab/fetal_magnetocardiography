@@ -31,7 +31,7 @@ See the `examples/` directory for Jupyter notebooks demonstrating different work
 | `comparison.ipynb` | Side-by-side comparison of all methods |
 | `ICA_annotate.ipynb` | Interactive GUI for labeling ICA components |
 
-> **Data requirements**: All notebooks require real fMCG measurement files in NPTDMS format (LabVIEW output). 
+> **Data requirements**: The synthetic data experiments can be reproduced without real patient data using real empyt device measurements for realistic noise conditions. All other notebooks require real fMCG measurements, which cannot be publicly shared due to patient privacy constraints.
 
 
 ## Module Structure
