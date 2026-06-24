@@ -126,6 +126,20 @@ def get_hr_baseline(hr, stable_and_quiescent, percentile=25, filter_length=60):
     baseline_hr = float(np.percentile(hr_smoothed[stable_and_quiescent], percentile))
     return baseline_hr
 
+from matplotlib.legend_handler import HandlerBase
+
+# Define a custom handler that draws text instead of a line/marker
+class TextHandler(HandlerBase):
+    def __init__(self, text, color="black", **kwargs):
+        self.text = text
+        self.color = color
+        super().__init__(**kwargs)
+
+    def create_artists(self, legend, orig_handle, xdescent, ydescent, width, height, fontsize, trans):
+        # Create a text artist inside the legend icon bounding box
+        tx = plt.Text(width/2, height/2, self.text, color=self.color,
+                      ha="center", va="center", fontsize=fontsize)
+        return [tx]
 
 def get_near_baseline_segments(
     peaks,
@@ -227,6 +241,7 @@ def get_near_baseline_segments(
             color="red",
             linestyle="--",
             label=f"Baseline HR: {baseline_hr:.2f} BPM",
+            zorder=6
         )
         plt.scatter(
             x_positions[near_baseline],
@@ -245,10 +260,32 @@ def get_near_baseline_segments(
                 x_positions[end],
                 color=f"C{i}",
                 alpha=0.3,
-                label=f"Beats {counts}",
+                label=f"Consecutive beats" if i == 0 else None,
             )
 
-        plt.legend(loc="lower right")
+            plt.text(
+                x_positions[start] + (x_positions[end] - x_positions[start]) / 2,
+                np.max(heartRate) * 0.95,
+                f"{counts}",
+                color=f"C{i}",
+                fontsize=8,
+                ha="center",
+                va="bottom",
+            )
+
+        handles, labels = plt.gca().get_legend_handles_labels()
+        text_key = object()
+        handles.append(text_key)
+        labels.append("Number of beats")
+
+        # 4. Pass the custom handler map to plt.legend
+        plt.legend(
+            handles=handles, 
+            labels=labels, 
+            handler_map={text_key: TextHandler(segments[0][0], color="C0")},
+            loc="lower right" 
+        )
+
         plt.xlabel("Time [s]")
         plt.ylabel("Heart Rate [BPM]")
         plt.grid(True, linestyle="--", alpha=0.9)
@@ -424,10 +461,31 @@ def _plot_hr_with_segments(heart_rate, segments, baseline_hr=None, bpm_threshold
                 x_positions[end],
                 color=f"C{i}",
                 alpha=0.3,
-                label=f"Beats {counts}",
+                label=f"Consecutive beats" if i == 0 else None,
+            )
+            ax.text(
+                x_positions[start] + (x_positions[end] - x_positions[start]) / 2,
+                np.max(heart_rate)*.95,
+                f"{counts}",
+                color=f"C{i}",
+                fontsize=8,
+                ha="center",
+                va="bottom",
             )
 
-    ax.legend(loc="lower right")
+    handles, labels = plt.gca().get_legend_handles_labels()
+    text_key = object()
+    handles.append(text_key)
+    labels.append("Number of beats")
+
+    # Pass the custom handler map to plt.legend
+    plt.legend(
+        handles=handles, 
+        labels=labels, 
+        handler_map={text_key: TextHandler(segments[0][0], color="C0")},
+        loc="lower right" 
+    )
+
     ax.set_xlabel("Time [s]")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
