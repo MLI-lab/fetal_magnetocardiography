@@ -1062,3 +1062,26 @@ class InverseSolver:
                 absolute_m_error.mean(axis=(0, -1)).mean(),
                 absolute_r_error.mean(axis=(0, -1)).mean(),
             )
+
+    def get_forward_solution(self, m_hat, r_hat, source_type="fetal", as_numpy=True):
+        "Computes the forward solution given the estimated parameters m_hat and r_hat."
+      
+        if source_type == "fetal":
+            idx = range(0,1)
+        elif source_type == "maternal":
+            idx = range(1,2)
+        else:
+            idx = range(0,2)
+
+        if not isinstance(m_hat, torch.Tensor):
+            m_hat = torch.tensor(m_hat, dtype=torch.float32, device=self.device)
+        if not isinstance(r_hat, torch.Tensor):
+            r_hat = torch.tensor(r_hat, dtype=torch.float32, device=self.device)
+
+
+        field =  self.forward_model.forward_linear(r_hat[:, idx, :], m_hat[:, idx, :], as_numpy=False)[:, self.axis_mask] @ self.whitening_matrix.T
+
+        if as_numpy:
+            return field.detach().cpu().numpy()
+        else:
+            return field
