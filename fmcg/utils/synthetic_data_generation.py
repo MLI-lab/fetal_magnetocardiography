@@ -575,6 +575,54 @@ def generate_dipole_movement(
     return r_trajectory
 
 
+def apply_vcg_drift(m_source, peaks, drift, drift_scale=1.0):
+    """Replay a measured VCG drift trajectory onto a clean 3D cardiac moment source.
+
+    The full measured drift (orientation ``units`` + relative magnitude ``scale`` w.r.t. ``mean_dir``;
+    produced by :func:`fmcg.analysis.vcg.vcg_drift` on a real recording) is **resampled** to the
+    number of beats in ``peaks``, then applied beat-wise as the minimal rotation
+    ``mean_dir -> units[i]`` (geodesically scaled by ``drift_scale``) and amplitude scaling
+    ``1 + drift_scale*(scale[i]-1)``. Rotations are slerp-interpolated and scales linearly
+    interpolated to every sample for smooth per-sample drift.
+
+    Parameters
+    ----------
+    m_source : (T, 3) clean cardiac moment trajectory (before drift).
+    peaks    : (n_beats,) synthetic R-peak sample indices.
+    drift    : dict from ``vcg_drift`` — uses ``units``, ``scale``, ``mean_dir``.
+    drift_scale : float — 0 = stationary, 1 = real magnitude, k = exaggerated.
+
+    Returns
+    -------
+    (T, 3) drifted moment trajectory.
+    """
+    from scipy.spatial.transform import Rotation, Slerp
+    from fmcg.analysis.vcg import axis_rotation
+
+    m_source = np.asarray(m_source, dtype=float)
+    peaks = np.asarray(peaks)
+    T = m_source.shape[0]
+    if len(peaks) < 2 or drift_scale == 0:
+        return m_source.copy()
+
+    # real per-beat drift rotations (mean_dir -> peak orientation)
+    units_r, scale_r, mean_dir = drift["units"], drift["scale"], drift["mean_dir"]
+    nr, n = len(units_r), len(peaks)
+    real_rots = Rotation.from_matrix([axis_rotation(mean_dir, u) for u in units_r])
+
+    # slerp-resample the full real trajectory -> n synthetic beats, then geodesically scale
+    resamp = Slerp(np.arange(nr), real_rots)(np.linspace(0.0, nr - 1, n))
+    beat_rots = Rotation.from_rotvec(drift_scale * resamp.as_rotvec())
+    scale_n = np.interp(np.linspace(0.0, 1.0, n), np.linspace(0.0, 1.0, len(scale_r)), scale_r)
+    beat_scales = 1.0 + drift_scale * (scale_n - 1.0)
+
+    # interpolate to every sample (clamp outside the [first, last] peak range)
+    idx = np.clip(np.arange(T), peaks[0], peaks[-1])
+    R_t = Slerp(peaks, beat_rots)(idx)
+    s_t = np.interp(idx, peaks, beat_scales)
+    return R_t.apply(m_source) * s_t[:, None]
+
+
 def generate_synthetic_fmcg_recording(
     r_sensors,
     # VCG source configuration
@@ -595,6 +643,9 @@ def generate_synthetic_fmcg_recording(
     movement_tau=2000,
     movement_momentum=0.98,
     movement_lowpass_cutoff=None,
+    # VCG drift (replay measured real drift; see fmcg.analysis.vcg.vcg_drift)
+    vcg_drift=None,
+    drift_scale=1.0,
     # VCG processing
     fetal_moment_amplitude_nAm2=60.0,
     maternal_moment_amplitude_nAm2=6000.0,
@@ -665,6 +716,13 @@ def generate_synthetic_fmcg_recording(
     movement_lowpass_cutoff : float or None
         If provided, apply Butterworth lowpass filter at this frequency (Hz) to smooth trajectory.
         Typical: 5 Hz removes jitter while preserving slow drift. Only for moving dipoles.
+    vcg_drift : dict or None, default None
+        If provided, replays a measured real VCG drift trajectory onto the fetal cardiac vector
+        (orientation + magnitude nonstationarity). Produce it with
+        :func:`fmcg.analysis.vcg.vcg_drift` on a real recording. See
+        :func:`apply_vcg_drift`. Grounds synthetic nonstationarity in real fetal dynamics.
+    drift_scale : float, default 1.0
+        Magnitude knob for ``vcg_drift``: 0 = stationary, 1 = real drift, k = exaggerated.
     fetal_moment_amplitude_nAm2 : float
         Target magnetic dipole moment amplitude for fetal signal in nanoAmpere·meter² (nA·m²).
         Typical fMCG: 10-50 nA·m². Default 20 nA·m².
@@ -911,6 +969,13 @@ def generate_synthetic_fmcg_recording(
     # Construct magnetic moments
     m_true = np.stack([fetal_signal, maternal_signal], axis=1)  # (n_samples, 2, 3)
 
+    # VCG drift: replay a measured real drift trajectory onto the fetal cardiac vector
+    if vcg_drift is not None and drift_scale != 0:
+        from fmcg.analysis.hr import compute_hr
+        _, fetal_peaks = compute_hr(m_true[:, 0, :], int(fs), plot=False)
+        print(f"Applying VCG drift replay (drift_scale={drift_scale}, {len(fetal_peaks)} fetal beats)...")
+        m_true[:, 0, :] = apply_vcg_drift(m_true[:, 0, :], fetal_peaks, vcg_drift, drift_scale)
+
     # Generate dipole trajectories
     if enable_movement:
         print(f"Generating dipole movement ({movement_type})...")
@@ -998,6 +1063,7 @@ def generate_synthetic_fmcg_recording(
             'maternal_rot_deg': maternal_rot,
             'enable_movement': enable_movement,
             'movement_type': movement_type if enable_movement else 'static',
+            'drift_scale': drift_scale if vcg_drift is not None else 0.0,
             'snr_db': snr_db,
             'noise_type': noise_type,
             'gaussian_noise_fraction': gaussian_noise_fraction,
