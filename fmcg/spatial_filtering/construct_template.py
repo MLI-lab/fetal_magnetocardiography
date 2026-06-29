@@ -54,12 +54,8 @@ def construct_template(data, sources, fs, comps, window_size=0.6, bpm_tol=5,
     # Detect heart rate and peaks from sources
     heartRate, peaks = compute_hr(sources[t_start:t_end][:, comps], fs, plot=False)
 
-    # Scale window_size relative to cardiac cycle
-    cardiac_cycle_samples = int((60 / np.median(heartRate)) * fs)
-    window_size_samples = int(window_size * cardiac_cycle_samples)
-
     # Average segments across similar heartbeats
-    topography, _, _ = average_heartbeats(peaks, data[t_start:t_end], fs)
+    topography, _, _ = average_heartbeats(peaks, data[t_start:t_end], fs, interval=window_size)
 
     if subtract_mean:
         topography -= topography.mean(axis=0)

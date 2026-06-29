@@ -313,7 +313,10 @@ def extract_epochs(signal, peaks, fs, ratio_pre=0.5, interval=2.5):
     ratio_pre : float
         Ratio of the epoch interval to be placed before the peak. Must be between 0 and 1. Defaults to 0.5 (i.e., symmetric epochs).
     interval : float
-        Total duration of the epoch in seconds. Defaults to 2.5 seconds.
+        Epoch length as a multiple of the mean RR interval (mean inter-peak
+        spacing), *not* in seconds: ``win = interval * mean(diff(peaks))``
+        samples. Defaults to 2.5 (≈2.5 cardiac cycles). The epoch therefore
+        scales with the detected heart rate.
 
     Returns
     -------
@@ -387,7 +390,10 @@ def average_heartbeats(peaks, signal, fs, ratio_pre=0.5, interval=2.5, plot=Fals
     ratio_pre : float
         Ratio of the epoch interval to be placed before the peak. Must be between 0 and 1. Defaults to 0.5 (i.e., symmetric epochs).
     interval : float
-        Total duration of the epoch in seconds. Defaults to 2.5 seconds.
+        Epoch length as a multiple of the mean RR interval (mean inter-peak
+        spacing), *not* in seconds: ``win = interval * mean(diff(peaks))``
+        samples. Defaults to 2.5 (≈2.5 cardiac cycles). The epoch therefore
+        scales with the detected heart rate.
     plot : bool
         If True, plots the average heartbeat with standard deviation shading. Defaults to False.
 

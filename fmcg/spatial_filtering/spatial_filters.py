@@ -510,7 +510,7 @@ class SpatialFilter:
     enhance : dict, optional
         Configuration for enhancement template (same structure as suppress)
     window_size : float, optional
-        Window size as fraction of cardiac cycle (default: 0.25)
+        Window size as fraction of cardiac cycle (default: 1)
     bpm_tol : float, optional
         BPM tolerance for beat selection (default: 5)
     t_start : float, optional
@@ -589,7 +589,7 @@ class SpatialFilter:
         fs,
         suppress=None,
         enhance=None,
-        window_size=0.25,
+        window_size=1,
         bpm_tol=5,
         t_start=None,
         t_end=None,
