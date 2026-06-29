@@ -95,7 +95,7 @@ def nullspace_projector(topography, **kwargs):
     return minimum_norm_projector(topography, **kwargs, nullspace=True)
 
 
-def covariance_projector(topography, data):
+def covariance_projector(topography, data, reg=0.0):
     """
     Covariance-based projection (LMMSE/Wiener filter).
 
@@ -108,6 +108,11 @@ def covariance_projector(topography, data):
         Signal template
     data : ndarray, shape (n_samples, n_channels)
         Data for computing signal covariance
+    reg : float, optional
+        Tikhonov regularization on the data covariance (added as
+        ``reg * trace(C)/n_channels * I``) before inversion. Required when the data is
+        rank-deficient (e.g. an already-reconstructed near-dipolar field), otherwise the
+        near-null directions blow up. Default 0.0 (no regularization, original behaviour).
 
     Returns
     -------
@@ -124,6 +129,8 @@ def covariance_projector(topography, data):
     """
     # LMMSE Filter: C_T / C_S
     signal_cov = np.cov(data.T)
+    if reg:
+        signal_cov = signal_cov + reg * np.trace(signal_cov) / signal_cov.shape[0] * np.eye(signal_cov.shape[0])
     U, S, _ = np.linalg.svd(signal_cov, hermitian=True)
     W = np.cov(topography.T) @ U @ np.diag(1 / S) @ U.T
 
