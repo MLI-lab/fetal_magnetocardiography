@@ -334,7 +334,9 @@ def extract_epochs(signal, peaks, fs, ratio_pre=0.5, interval=2.5):
     # avoids subsequent ``mean`` calls on empty arrays which raise
     # numpy runtime warnings.
     if peaks.size < 2:
-        # fallback epoch length in samples (interval seconds)
+        # Degenerate case: fewer than 2 peaks means the RR interval is
+        # undefined, so the usual RR-scaled window cannot be formed. Fall back
+        # to ``interval`` seconds purely to return a sensibly-shaped empty array.
         n_epoch_samples = max(1, int(round(interval * fs)))
         n_channels = signal.shape[1] if signal.ndim > 1 else 1
         # centered time axis for the epoch
@@ -365,10 +367,10 @@ def extract_epochs(signal, peaks, fs, ratio_pre=0.5, interval=2.5):
         epochs = epochs.squeeze(-1)
 
     # Time axis calculation
-    # If no epochs were extracted, create a sensible time_axis based on
-    # the requested interval to keep downstream shapes consistent.
+    # If no epochs were extracted, build the time axis from the same RR-scaled
+    # window (left_offset/right_offset) so the shape matches a real epoch.
     if epochs.size == 0:
-        n_epoch_samples = max(1, int(round(interval * fs)))
+        n_epoch_samples = max(1, left_offset + right_offset)
         time_axis = (np.arange(n_epoch_samples) - left_offset) / fs
     else:
         time_axis = (np.arange(epochs.shape[1]) - left_offset) / fs
@@ -413,12 +415,14 @@ def average_heartbeats(peaks, signal, fs, ratio_pre=0.5, interval=2.5, plot=Fals
     # ``mean`` on empty arrays and to keep downstream code shape-stable.
     if epochs.size == 0:
         n_channels = signal.shape[1] if signal.ndim > 1 else 1
-        n_epoch_samples = max(1, int(round(interval * fs)))
+        # Match the (RR-scaled) length of the time axis from extract_epochs.
+        if time_axis is not None and len(time_axis) > 0:
+            n_epoch_samples = len(time_axis)
+        else:
+            n_epoch_samples = max(1, int(round(interval * fs)))
+            time_axis = (np.arange(n_epoch_samples) - int(round(ratio_pre * n_epoch_samples))) / fs
         mean_epochs = np.full((n_epoch_samples, n_channels), np.nan)
         std_epochs = np.full((n_epoch_samples, n_channels), np.nan)
-        # compute matching time_axis if extract_epochs returned an empty one
-        if time_axis is None or len(time_axis) == 0:
-            time_axis = (np.arange(n_epoch_samples) - int(round(ratio_pre * n_epoch_samples))) / fs
     else:
         # Average and standard deviation across epochs
         mean_epochs = epochs.mean(axis=0)
