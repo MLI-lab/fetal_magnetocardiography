@@ -282,12 +282,14 @@ class MultiApproachPipeline:
 
             seg_data = PreprocessedData(
                 field_data=concat_field,
+                noise_maps=preprocessed.noise_maps,
                 fs=preprocessed.fs,
                 artifacts_mask=np.zeros(len(concat_field), dtype=bool),
                 axis_mask=preprocessed.axis_mask,
                 whitening_matrix=preprocessed.whitening_matrix,
                 r_sensors=preprocessed.r_sensors,
                 time=concat_time,
+                sensor_names=preprocessed.sensor_names,
             )
             result = approach_fn(seg_data)
             return self._remap_concat_result(result, seg_map, T)
@@ -297,12 +299,14 @@ class MultiApproachPipeline:
             for seg_start, seg_end in clean_segs:
                 seg_data = PreprocessedData(
                     field_data=preprocessed.field_data[seg_start:seg_end],
+                    noise_maps=preprocessed.noise_maps,
                     fs=preprocessed.fs,
                     artifacts_mask=np.zeros(seg_end - seg_start, dtype=bool),
                     axis_mask=preprocessed.axis_mask,
                     whitening_matrix=preprocessed.whitening_matrix,
                     r_sensors=preprocessed.r_sensors,
                     time=preprocessed.time[seg_start:seg_end],
+                    sensor_names=preprocessed.sensor_names,
                 )
                 logger.info(f"    Segment [{seg_start}:{seg_end}] ({(seg_end - seg_start) / preprocessed.fs:.1f}s)")
                 self._ica_orchestrator = None  # Fresh ICA per segment
