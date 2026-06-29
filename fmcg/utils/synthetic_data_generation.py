@@ -575,7 +575,7 @@ def generate_dipole_movement(
     return r_trajectory
 
 
-def apply_vcg_drift(m_source, peaks, drift, drift_scale=1.0):
+def apply_vcg_drift(m_source, peaks, drift, drift_scale=1.0, smooth=True):
     """Replay a measured VCG drift trajectory onto a clean 3D cardiac moment source.
 
     The full measured drift (orientation ``units`` + relative magnitude ``scale`` w.r.t. ``mean_dir``;
@@ -589,8 +589,11 @@ def apply_vcg_drift(m_source, peaks, drift, drift_scale=1.0):
     ----------
     m_source : (T, 3) clean cardiac moment trajectory (before drift).
     peaks    : (n_beats,) synthetic R-peak sample indices.
-    drift    : dict from ``vcg_drift`` — uses ``units``, ``scale``, ``mean_dir``.
+    drift    : dict from ``vcg_drift`` — uses ``units``/``scale`` (or their smoothed variants), ``mean_dir``.
     drift_scale : float — 0 = stationary, 1 = real magnitude, k = exaggerated.
+    smooth : bool — replay the smoothed orientation/scale trajectory (``units_smooth``/``scale_smooth``)
+        instead of the raw per-beat estimate. Default True: the raw per-beat ``units`` carry ~8 deg/beat
+        measurement noise that is *not* real drift; replaying it injects unrealistic beat-to-beat jitter.
 
     Returns
     -------
@@ -605,8 +608,10 @@ def apply_vcg_drift(m_source, peaks, drift, drift_scale=1.0):
     if len(peaks) < 2 or drift_scale == 0:
         return m_source.copy()
 
-    # real per-beat drift rotations (mean_dir -> peak orientation)
-    units_r, scale_r, mean_dir = drift["units"], drift["scale"], drift["mean_dir"]
+    # real per-beat drift rotations (mean_dir -> peak orientation); smoothed by default
+    units_r = drift["units_smooth"] if (smooth and "units_smooth" in drift) else drift["units"]
+    scale_r = drift["scale_smooth"] if (smooth and "scale_smooth" in drift) else drift["scale"]
+    mean_dir = drift["mean_dir"]
     nr, n = len(units_r), len(peaks)
     real_rots = Rotation.from_matrix([axis_rotation(mean_dir, u) for u in units_r])
 
