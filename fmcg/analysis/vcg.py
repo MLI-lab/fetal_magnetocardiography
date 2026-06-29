@@ -85,9 +85,16 @@ def vcg_drift(moment, peaks, fs, half_ms=50.0, smooth_beats=21):
     angle = np.degrees(np.arccos(np.clip(units @ mean_dir, -1.0, 1.0)))
     median_mag = float(np.median(mags))
     scale = mags / median_mag
+    # Smoothed 3-D orientation trajectory: the per-beat ``units`` carry large measurement noise
+    # (~8 deg/beat) that swamps the slow real drift. Smooth each component over ``smooth_beats`` and
+    # renormalize (small-angle geodesic mean) so a replay reproduces the slow drift, not the noise;
+    # regime shifts spanning many beats survive the window.
+    units_smooth = np.column_stack([_moving_average(units[:, c], smooth_beats) for c in range(3)])
+    units_smooth /= np.linalg.norm(units_smooth, axis=1, keepdims=True) + 1e-12
     return dict(
         beat_t=peaks / fs, peak_vecs=pv, units=units, mags=mags,
         mean_dir=mean_dir, median_mag=median_mag, angle_deg=angle, scale=scale,
+        units_smooth=units_smooth,
         angle_deg_smooth=_moving_average(angle, smooth_beats),
         scale_smooth=_moving_average(scale, smooth_beats),
     )
