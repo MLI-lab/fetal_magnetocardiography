@@ -28,7 +28,7 @@ def detect_peaks(signal, fs):
     return peaks_dict["ECG_R_Peaks"]
 
 
-def compute_hr(signal, fs, comps=None, label="", plot=True):
+def compute_hr(signal, fs, comps=None, label="", plot=True, fetal=True):
     """
     Overall orchestrator to compute Heart Rate, identify peaks,
     and optionally visualize the results.
@@ -37,7 +37,7 @@ def compute_hr(signal, fs, comps=None, label="", plot=True):
         comps = np.arange(signal.shape[1]) if signal.ndim > 1 else None
 
     # 1. Identify best peaks
-    peaks, selected_idx = _find_best_hr_estimate(signal, comps, fs)
+    peaks, selected_idx = _find_best_hr_estimate(signal, comps, fs//2 if fetal else fs)
 
     # 2. Calculate intervals and heart rates
     # Formula: HR = 60 / (RR_interval_in_seconds)
@@ -306,6 +306,135 @@ def get_near_baseline_segments(
         return segments, data
 
     return segments
+
+
+def split_ectopic_beats(
+    peaks,
+    fs,
+    win=10,
+    threshold=15,
+    signal=None,
+    morph_threshold=4.0,
+    ratio_pre=0.5,
+    interval=1.0,
+    plot=True,
+    return_data=False,
+):
+    """Split R-peaks into NORMAL and ECTOPIC/OUTLIER beats for type-aware averaging and segmentation.
+
+    Averaging an ectopic beat is ill-posed: it does not belong in the normal average (different
+    morphology), and a near-baseline segmentation (`get_near_baseline_segments`) excludes it as an
+    outlier, so forcing it in blends beat types. This function labels each beat so the normal beats can
+    be averaged / segmented cleanly while the ectopic beats are kept aside for separate inspection.
+
+    Detection combines the beat-to-beat RHYTHM (reusing `detect_hr_outlier`: percent change of the R-R
+    interval vs a backward running mean; a premature beat is a short R-R / HR spike, a pause or dropped
+    beat is a long R-R / HR dip) and, optionally, beat MORPHOLOGY (if `signal` is given: a beat whose
+    waveform is far from the normal-beat template by a robust z-score is also flagged, catching ectopics
+    that do not perturb the rhythm).
+
+    Parameters
+    ----------
+    peaks : (n_peaks,) array
+        R-peak sample indices.
+    fs : float
+        Sampling frequency [Hz].
+    win : int, optional
+        Backward running-mean window [beats] for the rhythm outlier test (`detect_hr_outlier`). Default 10.
+    threshold : float, optional
+        Percent R-R deviation to flag a rhythm outlier. Default 15.
+    signal : (n_samples, n_channels) array, optional
+        If given, adds morphology-based flagging on the beats epoched from this signal.
+    morph_threshold : float, optional
+        Robust z-score of the beat-to-template distance above which a beat is a morphology outlier. Default 4.
+    ratio_pre, interval : float, optional
+        Epoching parameters for the morphology path (passed to `extract_epochs`).
+    plot : bool, optional
+        If True, plot the fetal HR over time with the flagged beats annotated (default True).
+    return_data : bool, optional
+        If True, also return a dict with the heart rate, baseline and per-beat labels.
+
+    Returns
+    -------
+    normal_idx : (n_normal,) int array
+        Indices into `peaks` of beats safe to average / segment.
+    ectopic_idx : (n_ectopic,) int array
+        Indices of flagged beats (premature, pause/dropped, or morphology outlier). Note both endpoints of
+        each rhythm-outlier interval are excluded, so the normal set is conservative (safe for averaging).
+    labels : (n_peaks,) int array
+        Per-beat label: 0 normal, +1 premature, -1 pause/dropped, 2 morphology-only outlier.
+    data : dict, optional
+        Returned only if ``return_data=True`` (heart_rate, baseline_hr, labels, counts).
+    """
+    peaks = np.asarray(peaks)
+    n = len(peaks)
+    hr = 60.0 * fs / np.diff(peaks)                                     # per-interval HR, len n-1
+    iv_out = detect_hr_outlier(peaks, fs, win=win, threshold=threshold, plot=False)[:-1]
+    baseline = float(np.median(hr))
+
+    # A rhythm-outlier interval i (between peaks i and i+1) implicates the LATER beat i+1.
+    labels = np.zeros(n, dtype=int)
+    labels[np.where(iv_out & (hr > baseline))[0] + 1] = 1               # short R-R -> premature
+    labels[np.where(iv_out & (hr <= baseline))[0] + 1] = -1            # long  R-R -> pause / dropped
+
+    if signal is not None:                                             # optional morphology refinement
+        from .heartbeat_averaging import extract_epochs               # local import avoids circular import
+        ep, _ = extract_epochs(signal, peaks, fs, ratio_pre=ratio_pre, interval=interval)
+        m = ep.shape[0]
+        base = labels[:m] == 0
+        templ = np.median(ep[base] if base.any() else ep, axis=0)
+        d = np.linalg.norm((ep - templ).reshape(m, -1), axis=1)
+        dz = (d - np.median(d)) / (1.4826 * np.median(np.abs(d - np.median(d))) + 1e-12)
+        morph = np.where(dz > morph_threshold)[0]
+        labels[morph[labels[morph] == 0]] = 2                          # only if not already a rhythm outlier
+
+    excl = labels != 0
+    excl[np.where(iv_out)[0]] = True                                    # also drop the earlier endpoint of each outlier interval
+    normal_idx = np.where(~excl)[0]
+    ectopic_idx = np.where(excl)[0]
+
+    if plot:
+        _plot_ectopic_beats(hr, labels, baseline, win, threshold)
+
+    if return_data:
+        data = {
+            "heart_rate": hr,
+            "baseline_hr": baseline,
+            "labels": labels,
+            "n_premature": int((labels == 1).sum()),
+            "n_pause": int((labels == -1).sum()),
+            "n_morph": int((labels == 2).sum()),
+        }
+        return normal_idx, ectopic_idx, labels, data
+    return normal_idx, ectopic_idx, labels
+
+
+def _plot_ectopic_beats(hr, labels, baseline_hr, win, threshold):
+    """Fetal HR over time with the flagged beats annotated (premature / pause / morphology)."""
+    x = np.cumsum(60.0 / hr)                                            # time [s]; beat j sits at x[j-1]
+    fig = plt.figure(figsize=(7.11, 3), dpi=300)
+    ax = fig.gca()
+    ax.plot(x, hr, ".-", color="k", fillstyle="none", linewidth=0.75, label="Heart Rate")
+    ax.axhline(baseline_hr, color="red", linestyle="--", linewidth=1, label=f"Median HR: {baseline_hr:.1f} BPM")
+    for code, marker, color, name, filled in [(1, "v", "tab:red", "premature", True),
+                                              (-1, "^", "tab:orange", "pause / dropped", True),
+                                              (2, "x", "tab:purple", "morphology", False)]:
+        j = np.where(labels == code)[0]
+        j = j[j >= 1]                                                  # beat j -> interval j-1
+        if len(j):
+            kw = dict(edgecolor="k", linewidths=0.4) if filled else {}
+            ax.scatter(x[j - 1], hr[j - 1], marker=marker, color=color, s=40, zorder=5,
+                       label=f"{name} ({len(j)})", **kw)
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Heart Rate [BPM]")
+    ax.set_title(f"Ectopic-beat detection (win={win}, threshold={threshold}%)")
+    ax.grid(True, linestyle="--", alpha=0.9)
+    ax.minorticks_on()
+    ax.grid(which="minor", linestyle=":", alpha=0.5)
+    ax.legend(loc="best", fontsize=8)
+    plt.tight_layout()
+    plt.show()
+    return ax
 
 
 def _get_consecutive_segments(bool_array, min_length=10):
