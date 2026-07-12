@@ -12,7 +12,7 @@ from torchmin import minimize as torchmin_minimize
 from .basis import *
 from ..utils.utils import Logger, TqdmLoggingHandler
 from ._inverse_utils import *
-from .field_model import ForwardModel
+from .field_model import ForwardModel, CurrentDipoleForwardModel
 
 logger = logging.getLogger(__name__)
 logger.propagate = False
@@ -34,6 +34,7 @@ class InverseSolver:
         whitening_matrix=None,
         loss_mask=None,
         verbose=True,
+        source_model="magnetic",
         **kwargs,
     ):
 
@@ -133,10 +134,19 @@ class InverseSolver:
         self.axis_mask = axis_mask
         #assert axis_mask.shape == (16, 3)
 
-        # initialize forward model
+        # initialize forward model (magnetic dipole vs. electric current dipole)
         if not isinstance(r_sensors, torch.Tensor):
             r_sensors = torch.tensor(r_sensors, dtype=torch.float32, device=device)
-        self.forward_model = ForwardModel(r_sensors, device=device, axis_mask=axis_mask)
+        self.source_model = source_model
+        if source_model in ("magnetic", "magnetic_dipole"):
+            self.forward_model = ForwardModel(r_sensors, device=device, axis_mask=axis_mask)
+        elif source_model in ("current", "current_dipole"):
+            self.forward_model = CurrentDipoleForwardModel(r_sensors, device=device, axis_mask=axis_mask)
+        else:
+            raise ValueError(
+                f"Unknown source_model {source_model!r}; expected one of "
+                "'magnetic'/'magnetic_dipole' or 'current'/'current_dipole'."
+            )
 
         if whitening_matrix is not None and isinstance(whitening_matrix, (list, np.ndarray)):
             whitening_matrix = torch.tensor(whitening_matrix, dtype=torch.float32, device=device)

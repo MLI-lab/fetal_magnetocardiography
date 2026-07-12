@@ -461,3 +461,165 @@ class ForwardModel:
         if savename is not None:
             plt.savefig(savename, dpi=fig.dpi, bbox_inches="tight", pad_inches=0)
         plt.show()
+
+
+class CurrentDipoleForwardModel(ForwardModel):
+    """Magnetic field of an **electric current dipole** in an infinite homogeneous
+    medium (free space), via the Biot-Savart law.
+
+    Drop-in replacement for :class:`ForwardModel` in the reconstruction pipeline:
+    it exposes the same interface (``forward_linear`` / ``forward_temporal`` /
+    ``forward_numpy``, same shapes, same axis-masking, linear in the dipole moment)
+    but the heart is modelled as a current dipole with moment ``Q`` (A*m) rather
+    than a magnetic dipole with moment ``m`` (A*m^2).
+
+    Physics (``d = r_sensor - r_dipole``)::
+
+        B = (mu0/4pi) Q x d / |d|^3          (Biot-Savart, ~1/r^2, Q x r_hat)
+          = (mu0/4pi) (-[d]_x / |d|^3) Q      ([d]_x Q == d x Q)
+
+    contrasted with the magnetic point dipole ``B = (mu0/4pi)(3(m.r_hat)r_hat - m)/r^3``
+    (~1/r^3). The volume conductor is neglected (free space), which for the
+    magnetic field is a mild approximation; the payoff is that the recovered
+    moment trajectory is a more faithful VCG-like representation of the heart.
+    """
+
+    # Levi-Civita tensor: [d]_x[a, c] = _LEVI_CIVITA[a, b, c] * d[b], so that
+    # [d]_x @ q == d x q. Cached per device (tiny, 27 entries).
+    _LEVI_CIVITA = None
+
+    @classmethod
+    def _levi_civita(cls, device):
+        eps = cls._LEVI_CIVITA
+        if eps is None or eps.device != torch.device(device):
+            eps = torch.zeros(3, 3, 3, device=device)
+            for a, b, c in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+                eps[a, b, c] = 1.0
+            for a, b, c in ((0, 2, 1), (2, 1, 0), (1, 0, 2)):
+                eps[a, b, c] = -1.0
+            cls._LEVI_CIVITA = eps
+        return eps
+
+    def forward_linear(self, r_dipoles, m_dipoles=None, as_numpy=False, silent=False):
+        """Biot-Savart lead field for a current dipole. Same contract as
+        :meth:`ForwardModel.forward_linear`.
+
+        If ``m_dipoles`` is None returns the field operator of shape
+        ``(T, S*3, D*3)`` (axis-masked over sensor axes); otherwise returns the
+        field ``(T, S, 3)`` (in uT) for moments ``m_dipoles``.
+        """
+        if not isinstance(r_dipoles, torch.Tensor) and not silent:
+            r_dipoles = torch.tensor(
+                r_dipoles.copy(), dtype=torch.float32, device=self.device
+            )
+            logging.debug(
+                "Warning: not a tensor. Continuing without tracking gradients."
+            )
+
+        assert r_dipoles.shape[-1] == 3
+
+        if r_dipoles.ndim == 1:
+            r_dipoles = r_dipoles.reshape((1, 3))
+        if r_dipoles.ndim == 2:
+            r_dipoles = r_dipoles.reshape((1, -1, 3))
+
+        if m_dipoles is not None:
+            if not isinstance(m_dipoles, torch.Tensor) and not silent:
+                m_dipoles = torch.tensor(
+                    m_dipoles.copy(), dtype=torch.float32, device=self.device
+                )
+                logging.debug(
+                    "Warning: not a tensor. Continuing without tracking gradients."
+                )
+
+            assert m_dipoles.shape[-1] == 3
+
+            if m_dipoles.ndim == 1:
+                m_dipoles = m_dipoles.reshape((1, 3))
+            if m_dipoles.ndim == 2:
+                m_dipoles = m_dipoles.reshape((1, -1, 3))
+
+            assert m_dipoles.ndim == 3 and r_dipoles.ndim == 3
+            assert m_dipoles.shape[-2] == r_dipoles.shape[-2]
+
+            T, D, _ = m_dipoles.shape  # [T x D x 3]
+            m_vec = m_dipoles.reshape(T, D * 3, 1)  # [T x D*3 x 1]
+
+        # Displacement vectors d = r_sensor - r_dipole and their norms
+        d = self.r_sensors.reshape(1, -1, 1, 3) - r_dipoles.reshape(
+            r_dipoles.shape[0], 1, -1, 3
+        )  # [T x S x D x 3]
+        d_norm = torch.norm(d, dim=-1, keepdim=True)  # [T x S x D x 1]
+
+        # Biot-Savart linear operator: block = mu0_4pi * (-[d]_x) / |d|^3.
+        # Build [d]_x directly via the Levi-Civita contraction (single autograd
+        # node, no stacked intermediates), keeping this as lean as the magnetic
+        # ForwardModel: [d]_x[a, c] = eps_abc d_b, so [d]_x @ Q == d x Q.
+        mu0_4pi = 0.1  # mu0 / (4 * pi); in uT | mu0 = 4pi * 10^-7 H/m
+        eps = self._levi_civita(d.device)
+        skew = torch.einsum("abc,tsdb->tsdac", eps, d)  # [T x S x D x 3 x 3]
+        A = -mu0_4pi * skew / (d_norm**3).unsqueeze(-1)  # [T x S x D x 3 x 3]
+
+        # Vectorized representation, identical layout to ForwardModel
+        T, S, D, _, _ = A.shape
+        A_mat = A.permute(0, 1, 3, 2, 4).reshape(T, S * 3, D * 3)  # [T x S*3 x D*3]
+
+        if m_dipoles is None:
+            if self.axis_mask is not None:
+                A_mat = A_mat[:, self.axis_mask.flatten() == 1]
+            if as_numpy:
+                A_mat = A_mat.detach().cpu().numpy()
+            return A_mat
+
+        B_vec = torch.matmul(A_mat, m_vec)  # [T x S*3 x 1]
+        B_total = B_vec.reshape(T, S, 3)  # [T x S x 3]
+        if as_numpy:
+            B_total = B_total.detach().cpu().numpy()
+        return B_total
+
+    def forward_temporal(self, m_dipoles, r_dipoles):
+        """Compact Biot-Savart field over time (uT). Same shapes as
+        :meth:`ForwardModel.forward_temporal`; produces the same result as
+        ``forward_linear`` when moments are given.
+        """
+        if not isinstance(self.r_sensors, torch.Tensor):
+            self.r_sensors = torch.tensor(
+                self.r_sensors, dtype=torch.float32, device=self.device
+            )
+        if not isinstance(m_dipoles, torch.Tensor):
+            m_dipoles = torch.tensor(
+                m_dipoles.copy(), dtype=torch.float32, device=self.device
+            )
+            logging.debug(
+                "Warning: not a tensor. Continuing without tracking gradients."
+            )
+        if not isinstance(r_dipoles, torch.Tensor):
+            r_dipoles = torch.tensor(
+                r_dipoles.copy(), dtype=torch.float32, device=self.device
+            )
+            logging.debug("Not a tensor. Continuing without tracking gradients.")
+
+        assert m_dipoles.shape[-1] == 3 and r_dipoles.shape[-1] == 3
+
+        if m_dipoles.ndim == 1:
+            m_dipoles = m_dipoles.reshape((1, 3))
+        if m_dipoles.ndim == 2:
+            m_dipoles = m_dipoles.reshape((1, -1, 3))
+        if r_dipoles.ndim == 1:
+            r_dipoles = r_dipoles.reshape((1, 3))
+        if r_dipoles.ndim == 2:
+            r_dipoles = r_dipoles.reshape((1, -1, 3))
+
+        assert m_dipoles.ndim == 3 and r_dipoles.ndim == 3
+        assert m_dipoles.shape[-2] == r_dipoles.shape[-2]
+
+        # d = r_sensor - r_dipole  [T x S x D x 3]
+        d = self.r_sensors.reshape(1, -1, 1, 3) - r_dipoles.reshape(
+            r_dipoles.shape[0], 1, -1, 3
+        )
+        m_dipoles = m_dipoles.reshape(m_dipoles.shape[0], 1, -1, 3)  # [T x 1 x D x 3]
+        mu0_4pi = 0.1  # in uT
+        d_norm = torch.norm(d, dim=-1, keepdim=True)  # [T x S x D x 1]
+        # Biot-Savart: B = mu0_4pi * (Q x d) / |d|^3, summed over dipoles
+        B = mu0_4pi * torch.cross(m_dipoles, d, dim=-1) / d_norm**3
+        return torch.sum(B, dim=-2)  # [T x S x 3]
