@@ -301,7 +301,7 @@ def plot_compare_magnetic_moments(
         plt.show()
 
 
-def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]", preprocess=False, preprocess_method="vg", plot_pca=False, separate_figures=False):
+def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None, xlim=[50, 55], ylabel=r"Magnetic Moment [$\mathrm{\mu}$Am$^2$]", preprocess=False, preprocess_method="vg", plot_pca=False, separate_figures=False, figsize=None, hspace=0.05):
     """
     Plot magnetic moments with each axis (x, y, z) in separate subplots.
     
@@ -369,7 +369,7 @@ def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None
         # fetal
         Y_f, pca_f = _prepare_source(0)
         nrows = 3
-        fig_f, axes_f = plt.subplots(nrows, 1, sharex=True, figsize=(7.11, 1 * nrows))
+        fig_f, axes_f = plt.subplots(nrows, 1, sharex=True, figsize=((7.16, .3 * nrows) if figsize is None else figsize))
         if nrows == 1:
             axes_f = [axes_f]
         for i in range(3):
@@ -403,7 +403,7 @@ def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None
 
         # maternal
         Y_m, pca_m = _prepare_source(1)
-        fig_m, axes_m = plt.subplots(nrows, 1, sharex=True, figsize=(7.11, 1* nrows))
+        fig_m, axes_m = plt.subplots(nrows, 1, sharex=True, figsize=((7.16, .3 * nrows) if figsize is None else figsize))
         if nrows == 1:
             axes_m = [axes_m]
         for i in range(3):
@@ -424,11 +424,11 @@ def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None
 
         fig_m.supylabel("Maternal " + ylabel)
         axes_m[-1].set_xlabel('Time [s]')
-        plt.tight_layout()
+        #plt.tight_layout()
         if savename:
             base, ext = os.path.splitext(savename)
             sav_m = f"{base}_maternal{ext}"
-            plt.savefig(sav_m, bbox_inches='tight', pad_inches=0.01, dpi=fig_m.dpi)
+            plt.savefig(sav_m,  pad_inches=0.01, dpi=fig_m.dpi)
             plt.close(fig_m)
         else:
             plt.show()
@@ -442,7 +442,7 @@ def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None
     n_f = 3 + (1 if plot_pca else 0)
     n_m = 3 + (1 if plot_pca else 0)
     total_rows = n_f + n_m
-    fig, axes = plt.subplots(total_rows, 1, sharex=True, figsize=(7.11, 2.5 * total_rows))
+    fig, axes = plt.subplots(total_rows, 1, sharex=True, figsize=((7.16, 2.5 * total_rows) if figsize is None else figsize))
     if total_rows == 1:
         axes = [axes]
 
@@ -450,20 +450,24 @@ def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None
     # plot fetal
     for i in range(3):
         ax = axes[plot_idx]
-        ax.plot(time, Y_f[:, i], color=colors[i])
-        ax.set_title(f"Fetal {axis_names[i]}")
+        ax.plot(time, Y_f[:, i], color='tab:red', label=f"Fetal {axis_names[i]}", linewidth=0.7)
+        #ax.set_title(f"Fetal {axis_names[i]}")
         ax.grid(True, which='minor', linestyle=':', linewidth=0.7)
         ax.minorticks_on()
         ax.grid(True)
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune='both'))
         ax.yaxis.set_minor_locator(AutoMinorLocator(2))
         ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+        ax.tick_params(axis='y', labelsize=7)
         ax.set_xlim(xlim)
+        ax.text(0.99, 0.92, f"Fetal {axis_names[i]}", transform=ax.transAxes,
+                ha='right', va='top', fontsize=7, color='k',
+                bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.8))
         plot_idx += 1
     if plot_pca and pca_f is not None:
         ax = axes[plot_idx]
         ax.plot(time, pca_f, color='k')
-        ax.set_title('Fetal PCA1')
+        #ax.set_title('Fetal PCA1')
         ax.grid(True)
         ax.xaxis.set_minor_locator(AutoMinorLocator(4))
         ax.set_xlim(xlim)
@@ -472,32 +476,44 @@ def plot_magnetic_moments_separate_axes(m_hat, time=None, fs=None, savename=None
     # plot maternal
     for i in range(3):
         ax = axes[plot_idx]
-        ax.plot(time, Y_m[:, i], color=colors[i])
-        ax.set_title(f"Maternal {axis_names[i]}")
+        ax.plot(time, Y_m[:, i], color='tab:blue', label=f"Maternal {axis_names[i]}", linewidth=0.7)
+        #ax.set_title(f"Maternal {axis_names[i]}")
         ax.grid(True, which='minor', linestyle=':', linewidth=0.7)
         ax.minorticks_on()
         ax.grid(True)
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, prune='both'))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=2, prune='both'))
         ax.yaxis.set_minor_locator(AutoMinorLocator(2))
         ax.xaxis.set_minor_locator(AutoMinorLocator(4))
+        ax.tick_params(axis='y', labelsize=7)
         ax.set_xlim(xlim)
+        ax.text(0.99, 0.92, f"Maternal {axis_names[i]}", transform=ax.transAxes,
+                ha='right', va='top', fontsize=7, color='k',
+                bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.8))
         plot_idx += 1
     if plot_pca and pca_m is not None:
         ax = axes[plot_idx]
         ax.plot(time, pca_m, color='k')
-        ax.set_title('Maternal PCA1')
+        #ax.set_title('Maternal PCA1')
         ax.grid(True)
         ax.xaxis.set_minor_locator(AutoMinorLocator(4))
         ax.set_xlim(xlim)
 
     # Set x-axis label for bottom row
-    axes[-1].set_xlabel("Time [s]")
-    
+    axes[-1].set_xlabel("Time [s]", fontsize=plt.rcParams['axes.labelsize'], labelpad=1)
+    axes[-1].tick_params(axis='x', labelsize=7)
+
+    for ax in axes:
+        plt.setp(ax.spines.values(), lw=0.75)
+
+
     # Set y-axis label
-    fig.supylabel(ylabel)
-    
+    fig.supylabel(ylabel, x=0.06, fontsize=plt.rcParams['axes.labelsize'],
+                  fontweight='normal')
+
     plt.tight_layout()
-    
+    # apply tight vertical spacing AFTER tight_layout so it isn't overridden
+    plt.subplots_adjust(hspace=hspace)
+
     if savename:
         plt.savefig(
             savename,
