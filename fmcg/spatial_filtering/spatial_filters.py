@@ -869,3 +869,180 @@ class SpatialFilter:
         """
         data_reduced = self._reduce_data(data)
         return self._build_filter(data_reduced, **filter_config)
+
+
+class LocalSpatialFilter:
+    """
+    Local (time-windowed) spatial filter — a thin wrapper around ``SpatialFilter``.
+
+    ``SpatialFilter`` is *global*: it estimates a single filter matrix from a
+    template/covariance over the entire recording and applies it everywhere. This
+    assumes the source topographies (maternal/fetal fields) are stationary. When
+    they drift (fetal movement, position changes, heart-rate variation), a single
+    global filter is a compromise that fits no part of the record well.
+
+    ``LocalSpatialFilter`` instead slides a window over the recording, rebuilds a
+    fresh ``SpatialFilter`` on each window's own data (and correspondingly sliced
+    ``sources``), applies it locally, and stitches the windows back together. The
+    resulting filter tracks the drifting topography over time. All filtering
+    methods, template-construction options, and ``apply()`` keyword arguments are
+    exactly those of ``SpatialFilter`` (see that class for the method list) and are
+    forwarded verbatim.
+
+    Parameters
+    ----------
+    method : str
+        Filtering method name (see ``SpatialFilter`` for valid methods).
+    fs : float
+        Sampling frequency in Hz.
+    window_sec : float
+        Window length in seconds. Must be large enough to contain several cardiac
+        cycles, since each window independently runs heart-rate detection and beat
+        averaging for template construction (e.g. >= ~10 s).
+    hop_sec : float, optional
+        Step between successive window starts in seconds (default: ``window_sec / 2``,
+        i.e. 50% overlap). Ignored when ``stitch='block'`` (forced to ``window_sec``).
+    stitch : {'crossfade', 'block'}, optional
+        How overlapping windows are combined (default: 'crossfade'):
+        - 'crossfade': windows overlap and are blended with a Hann taper, normalised
+          by the accumulated weights, so the time-varying filter has no block
+          discontinuities.
+        - 'block': non-overlapping windows filtered independently and concatenated
+          (most concise; introduces discontinuities at block edges).
+    suppress, enhance : dict, optional
+        Template configurations, same structure as ``SpatialFilter`` (each with
+        'sources' and 'comps'). The full-length 'sources' array is sliced to each
+        window automatically.
+    window_size, bpm_tol, t_start, t_end, subtract_mean, axis_mask
+        Forwarded to each per-window ``SpatialFilter`` (same meaning as there),
+        except ``t_start``/``t_end``, which here restrict the *time span that is
+        filtered* (seconds); samples outside the span are passed through unchanged.
+
+    Examples
+    --------
+    >>> lsf = LocalSpatialFilter(
+    ...     method="lmmse", fs=fs, window_sec=30, hop_sec=15,
+    ...     enhance={"sources": sources, "comps": fetals},
+    ... )
+    >>> filtered = lsf.apply(field_maps[:, axis_mask], reg_power=0.01)
+    """
+
+    def __init__(
+        self,
+        method,
+        fs,
+        window_sec,
+        hop_sec=None,
+        stitch="crossfade",
+        suppress=None,
+        enhance=None,
+        window_size=1,
+        bpm_tol=5,
+        t_start=None,
+        t_end=None,
+        subtract_mean=True,
+        axis_mask=None,
+    ):
+        if window_sec <= 0:
+            raise ValueError(f"window_sec must be positive, got {window_sec}")
+        if stitch not in ("crossfade", "block"):
+            raise ValueError(
+                f"Invalid stitch '{stitch}'. Must be 'crossfade' or 'block'."
+            )
+
+        self.method = method
+        self.fs = fs
+        self.window_sec = window_sec
+        self.hop_sec = hop_sec if hop_sec is not None else window_sec / 2
+        self.stitch = stitch
+        self.suppress = suppress
+        self.enhance = enhance
+        self.window_size = window_size
+        self.bpm_tol = bpm_tol
+        self.t_start = t_start
+        self.t_end = t_end
+        self.subtract_mean = subtract_mean
+        self.axis_mask = axis_mask
+
+        self.win = int(window_sec * fs)
+        self.hop = self.win if stitch == "block" else int(self.hop_sec * fs)
+        if self.hop <= 0:
+            raise ValueError(f"hop_sec must be positive, got {self.hop_sec}")
+
+        # Fail fast on invalid method/config combinations, consistent with
+        # SpatialFilter (validation is identical since args are forwarded).
+        self._make_filter(self.suppress, self.enhance)
+
+    def _make_filter(self, suppress, enhance):
+        """Instantiate a ``SpatialFilter`` sharing this wrapper's configuration."""
+        return SpatialFilter(
+            method=self.method,
+            fs=self.fs,
+            suppress=suppress,
+            enhance=enhance,
+            window_size=self.window_size,
+            bpm_tol=self.bpm_tol,
+            subtract_mean=self.subtract_mean,
+            axis_mask=self.axis_mask,
+        )
+
+    def _slice_cfg(self, cfg, s, e):
+        """Slice a template config's ``sources`` to the window ``[s:e]``."""
+        if cfg is None:
+            return None
+        c = dict(cfg)
+        c["sources"] = cfg["sources"][s:e]
+        return c
+
+    def _taper(self, length):
+        """Window weights for one segment (Hann for crossfade, flat for block)."""
+        if self.stitch == "block":
+            return np.ones(length)
+        # +2 / [1:-1] keeps endpoints strictly positive so edge samples never get
+        # zero weight (no divide-by-zero, no zeroed record ends).
+        return np.hanning(length + 2)[1:-1]
+
+    def apply(self, data, **filter_config):
+        """
+        Apply the local spatial filter to data and return the filtered signal.
+
+        Parameters
+        ----------
+        data : ndarray, shape (n_samples, n_channels)
+            Input data to filter.
+        **filter_config : keyword arguments
+            Method-specific parameters, forwarded to each per-window
+            ``SpatialFilter.apply`` (e.g. ``reg_power``, ``k``,
+            ``explained_variance``, ``threshold_power``).
+
+        Returns
+        -------
+        filtered_data : ndarray, shape (n_samples, n_channels)
+            Locally filtered data.
+        """
+        n = data.shape[0]
+
+        # Restrict filtering to [t_start, t_end] (seconds); pass through the rest.
+        span_start = 0 if self.t_start is None else max(0, int(self.t_start * self.fs))
+        span_end = n if self.t_end is None else min(n, int(self.t_end * self.fs))
+
+        out = np.array(data, dtype=float)  # copy; untouched samples pass through
+        out[span_start:span_end] = 0.0
+        wsum = np.zeros(n)
+
+        for s in range(span_start, span_end, self.hop):
+            e = min(s + self.win, span_end)
+            sf = self._make_filter(
+                self._slice_cfg(self.suppress, s, e),
+                self._slice_cfg(self.enhance, s, e),
+            )
+            y = sf.apply(data[s:e], **filter_config)
+            taper = self._taper(e - s)
+            out[s:e] += taper[:, None] * y
+            wsum[s:e] += taper
+            if e == span_end:
+                break
+
+        active = wsum > 0
+        out[active] /= wsum[active, None]
+        return out

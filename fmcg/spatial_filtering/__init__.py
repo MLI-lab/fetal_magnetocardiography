@@ -1,1 +1,1 @@
-from .spatial_filters import SpatialFilter
+from .spatial_filters import SpatialFilter, LocalSpatialFilter
