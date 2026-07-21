@@ -10,7 +10,11 @@ font_dir = ['/data/fonts']
 for font in font_manager.findSystemFonts(font_dir):
     font_manager.fontManager.addfont(font)
 
-plt.rcParams['font.family'] = 'Helvetica'
+# Use Helvetica only if the font is actually installed; otherwise keep matplotlib's
+# default sans-serif. Setting it unconditionally makes every plot emit a "font not
+# found" warning and silently fall back on machines without the Helvetica .ttf.
+if 'Helvetica' in {f.name for f in font_manager.fontManager.ttflist}:
+    plt.rcParams['font.family'] = 'Helvetica'
 mpl.rcParams["font.size"] = 8
 
 
