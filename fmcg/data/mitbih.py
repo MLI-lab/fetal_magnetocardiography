@@ -7,6 +7,8 @@ from typing import Optional
 import numpy as np
 import wfdb
 
+from ._common import BEAT_SYMBOLS as _BEAT_SYMBOLS
+
 MITBIH_RECORDS = [
     "100", "101", "102", "103", "104", "105", "106", "107", "108", "109",
     "111", "112", "113", "114", "115", "116", "117", "118", "119",
@@ -15,9 +17,6 @@ MITBIH_RECORDS = [
     "212", "213", "214", "215", "217", "219", "220", "221", "222", "223",
     "228", "230", "231", "232", "233", "234",
 ]
-
-# Symbols that mark actual heartbeat positions (R-peaks)
-_BEAT_SYMBOLS = set("NLRBAaJSVrFejnE/fQ?")
 
 
 def load_mitbih(
