@@ -18,6 +18,8 @@ from fmcg.ica.io import (
     load_exported_ica_data as _load_exported_ica_data,
 )
 from fmcg.pipeline.preprocessing import preprocess
+from fmcg.ica.beat_locked import beat_lock
+from fmcg.analysis.hr import detect_peaks
 
 try:
     import ipywidgets as widgets
@@ -89,7 +91,9 @@ class ICAComponentLabeler:
                             xlim=None, sampfrom=None, sampto=None,
                             fig_size=(12.0, 2.0), canvas_size=("1000px", "600px"),
                             grid_cols=2, max_height="600px", save_suffix="", dpi=100,
-                            base_path=None, hr_tolerance=5.0, correlation_threshold=0.35):
+                            base_path=None, hr_tolerance=5.0, correlation_threshold=0.35,
+                            beat_locked=False, beat_locked_n_perm=200,
+                            sort_by="default", peak_magnitude=False):
         """Create ICAComponentLabeler from pre-filtered signal data.
 
         This alternative constructor bypasses the data loading and preprocessing pipeline,
@@ -135,6 +139,10 @@ class ICAComponentLabeler:
         instance.current_component = 0
         instance.seed = seed
         instance.base_path = base_path
+        instance.beat_locked = beat_locked
+        instance.beat_locked_n_perm = beat_locked_n_perm
+        instance.sort_by = sort_by
+        instance.peak_magnitude = peak_magnitude
 
         # Set data directly
         instance.bp_data = signal.copy()
@@ -297,6 +305,14 @@ class ICAComponentLabeler:
         self.fetal_reference = None
         self.maternal_reference = None
         self.reference_peaks = {}  # Store peaks for reference components
+
+        # Beat-locked annotation aid (opt-in, backward compatible)
+        self.beat_locked = getattr(self, "beat_locked", False)
+        self.beat_locked_n_perm = getattr(self, "beat_locked_n_perm", 200)
+        self.sort_by = getattr(self, "sort_by", "default")
+        self.peak_magnitude = getattr(self, "peak_magnitude", False)
+        self.beat_locked_axes = []   # per display position: (fig, ax_fetal, ax_maternal)
+        self.beat_locked_results = {}  # comp_idx -> {'fetal': res, 'maternal': res}
 
         # Cross-correlation similarity scores
         self.fetal_similarities = {}  # Store cross-correlation scores to fetal reference
@@ -484,10 +500,13 @@ class ICAComponentLabeler:
                 'sdnn': sdnn
             })
         
-        # Sort by kurtosis (descending) then by SDNN (descending)
+        if getattr(self, "sort_by", "default") == "energy":
+            # Highest-energy components first (energy = mixing-column norm)
+            energy = np.linalg.norm(self.ica.mixing_, axis=0)
+            return [int(i) for i in np.argsort(energy)[::-1]]
+
+        # Default: by SDNN (ascending) then kurtosis (descending)
         sorted_metrics = sorted(metrics, key=lambda x: (x['sdnn'], -x['kurtosis']))
-        
-        # Return the sorted component indices
         return [m['comp_idx'] for m in sorted_metrics]
 
     def setup_gui(self):
@@ -513,6 +532,7 @@ class ICAComponentLabeler:
         self.fetal_checkboxes = []
         self.maternal_checkboxes = []
         self.stats_widgets = []  # Store references to stats widgets
+        self.beat_locked_axes = []  # parallel to rows when beat_locked is on
         
         # Create mapping from original component index to display position
         self.comp_idx_to_display_pos = {comp_idx: i for i, comp_idx in enumerate(self.component_order)}
@@ -755,11 +775,11 @@ class ICAComponentLabeler:
         ], layout=widgets.Layout(width='160px'))
         
         # Create horizontal layout for this row with natural height
-        row = widgets.HBox([
-            canvas_widget,
-            stats_widget, 
-            controls_column
-        ], layout=widgets.Layout(
+        row_children = [canvas_widget]
+        if self.beat_locked:
+            row_children.append(self._create_beat_locked_canvas(comp_idx))
+        row_children += [stats_widget, controls_column]
+        row = widgets.HBox(row_children, layout=widgets.Layout(
             margin='1px 0px',  # Reduced margin from 10px to 2px
             border='1px solid #ddd', 
             padding='1px',  # Reduced padding from 10px to 5px
@@ -905,7 +925,7 @@ class ICAComponentLabeler:
             
             # Set new fetal reference
             self.fetal_reference = comp_idx
-            self.reference_peaks['fetal'] = self.all_peaks[comp_idx]
+            self.reference_peaks['fetal'] = self._reference_peaks(comp_idx, 'fetal')
             
             # Compute cross-correlation similarities
             self._compute_all_similarities(comp_idx, 'fetal')
@@ -921,10 +941,12 @@ class ICAComponentLabeler:
                 # Clear similarities when reference is removed
                 self.fetal_similarities = {}
                 self.fetal_hr_similar = set()
-        
+
         # Update all plots and stats
         self._update_all_plots()
         self._update_all_stats()
+        if self.beat_locked:
+            self._update_beat_locked('fetal')
 
     def _on_maternal_reference_changed(self, comp_idx, change):
         """Handle maternal reference checkbox change"""
@@ -936,7 +958,7 @@ class ICAComponentLabeler:
             
             # Set new maternal reference
             self.maternal_reference = comp_idx
-            self.reference_peaks['maternal'] = self.all_peaks[comp_idx]
+            self.reference_peaks['maternal'] = self._reference_peaks(comp_idx, 'maternal')
             
             # Compute cross-correlation similarities
             self._compute_all_similarities(comp_idx, 'maternal')
@@ -956,6 +978,158 @@ class ICAComponentLabeler:
         # Update all plots and stats
         self._update_all_plots()
         self._update_all_stats()
+        if self.beat_locked:
+            self._update_beat_locked('maternal')
+
+    # ------------------------------------------------------------------
+    # Beat-locked annotation aid (opt-in via beat_locked=True)
+    # ------------------------------------------------------------------
+
+    def _create_beat_locked_canvas(self, comp_idx):
+        """Twin-panel canvas showing this component locked to the fetal and
+        maternal reference beats. Empty until a reference is marked."""
+        was_interactive = plt.isinteractive()
+        plt.ioff()
+        fig, axes = plt.subplots(1, 2, figsize=(2.6, 1.4), dpi=self.dpi)
+        for ax, title in zip(axes, ["fetal", "maternal"]):
+            ax.set_title(title, fontsize=7)
+            ax.set_xticks([]); ax.set_yticks([])
+            ax.text(0.5, 0.5, "no ref", ha="center", va="center",
+                    fontsize=6, color="0.6", transform=ax.transAxes)
+        fig.tight_layout(pad=0.2)
+        if was_interactive:
+            plt.ion()
+        self.beat_locked_axes.append((fig, axes[0], axes[1]))
+        canvas = fig.canvas
+        if hasattr(canvas, "layout"):
+            canvas.layout.width = "230px"; canvas.layout.margin = "0px"; canvas.layout.padding = "0px"
+        for attr in ("toolbar_visible", "header_visible", "footer_visible", "resizable"):
+            if hasattr(canvas, attr):
+                setattr(canvas, attr, False)
+        return canvas
+
+    def _draw_beat_locked_panel(self, ax, kind, res):
+        """Draw one beat-locked average panel from a beat_lock() result dict."""
+        ax.clear(); ax.set_xticks([]); ax.set_yticks([])
+        if res is None or res.get("mean") is None:
+            ax.set_title(kind, fontsize=7)
+            ax.text(0.5, 0.5, "no ref" if res is None else "n/a",
+                    ha="center", va="center", fontsize=6, color="0.6", transform=ax.transAxes)
+            return
+        x = np.arange(res["mean"].shape[0])
+        col = "red" if kind == "fetal" else "blue"
+        ax.plot(x, res["mean"], color=col, lw=1.0)
+        ax.fill_between(x, res["mean"] - res["std"], res["mean"] + res["std"],
+                        color=col, alpha=0.25, lw=0)
+        if res["significant"] is None:
+            lbl = f"{kind} F={res['F']:.0f}"
+        else:
+            lbl = f"{kind} F={res['F']:.0f} ({'sig' if res['significant'] else 'n.s.'})"
+        ax.set_title(lbl, fontsize=6.5)
+
+    def _update_beat_locked(self, which=None):
+        """Recompute and redraw the beat-locked panels for all components.
+
+        which selects the column to refresh ('fetal', 'maternal', or None for
+        both). Called when a reference is (un)marked.
+        """
+        if not self.beat_locked or not self.beat_locked_axes:
+            return
+        kinds = ["fetal", "maternal"] if which is None else [which]
+        for kind in kinds:
+            peaks = self.reference_peaks.get(kind)
+            for i, comp_idx in enumerate(self.component_order):
+                if i >= len(self.beat_locked_axes):
+                    break
+                fig, ax_f, ax_m = self.beat_locked_axes[i]
+                ax = ax_f if kind == "fetal" else ax_m
+                if peaks is None or len(peaks) < 4:
+                    self.beat_locked_results.get(comp_idx, {}).pop(kind, None)
+                    self._draw_beat_locked_panel(ax, kind, None)
+                else:
+                    # peaks index the full (uncropped) signal, so lock against it
+                    res = beat_lock(self.sources_orig_full[:, comp_idx], peaks, self.fs,
+                                    n_perm=self.beat_locked_n_perm)
+                    self.beat_locked_results.setdefault(comp_idx, {})[kind] = res
+                    self._draw_beat_locked_panel(ax, kind, res)
+                fig.canvas.draw_idle()
+
+    def _reference_peaks(self, comp_idx, kind):
+        """R-peaks of a reference component, detected in a way suited to its rhythm.
+
+        A fetal reference is detected in fetal mode (half sampling rate, so the
+        vg detector tuned for adult rate catches the faster fetal QRS). Both use
+        the magnitude when peak_magnitude is set. Falls back to the pre-computed
+        adult-rate peaks if detection fails.
+        """
+        sig = self.sources_orig_full[:, comp_idx]
+        try:
+            return detect_peaks(sig, self.fs, fetal=(kind == "fetal"),
+                                magnitude=self.peak_magnitude)
+        except Exception:
+            return self.all_peaks[comp_idx]
+
+    def set_reference(self, comp_idx, kind):
+        """Mark a component as the fetal or maternal reference programmatically.
+
+        Sets the reference peak train to that component's detected peaks and, when
+        beat_locked is on, refreshes the beat-locked panels. Mirrors ticking the
+        Fetal Ref / Maternal Ref checkbox, for headless or scripted use.
+        """
+        if kind not in ("fetal", "maternal"):
+            raise ValueError("kind must be 'fetal' or 'maternal'")
+        if kind == "fetal":
+            self.fetal_reference = comp_idx
+        else:
+            self.maternal_reference = comp_idx
+        self.reference_peaks[kind] = self._reference_peaks(comp_idx, kind)
+        if self.beat_locked:
+            self._update_beat_locked(kind)
+
+    def plot_beat_locked_frames(self, components=None, xlim=None,
+                                figsize=(7.16, 1.5), show=True):
+        """Render per-component beat-locked frames as static figures.
+
+        Each frame shows the 34-electrode (or n-channel) mixing pattern, the
+        component time course, and its average beat locked to the fetal and to the
+        maternal reference, with the F statistic and significance. Requires a fetal
+        and/or maternal reference to be set (via set_reference or the widget).
+        Returns the list of figures. Works headless, for reports.
+        """
+        if 'fetal' not in self.reference_peaks and 'maternal' not in self.reference_peaks:
+            raise RuntimeError("set a fetal and/or maternal reference before plotting frames")
+        if components is None:
+            components = list(self.component_order)
+        if xlim is None:
+            xlim = self.xlim if self.xlim is not None else (float(self.time[0]), float(self.time[-1]))
+        figs = []
+        for comp_idx in components:
+            s = self.sources[:, comp_idx]                 # cropped, for the time course
+            s_full = self.sources_orig_full[:, comp_idx]  # full, matches the peak indices
+            mix = self.ica.mixing_[:, comp_idx]
+            energy = float(np.linalg.norm(mix))
+            res = {kind: (beat_lock(s_full, self.reference_peaks[kind], self.fs,
+                                    n_perm=self.beat_locked_n_perm)
+                          if kind in self.reference_peaks else None)
+                   for kind in ("fetal", "maternal")}
+            self.beat_locked_results[comp_idx] = {
+                k: v for k, v in res.items() if v is not None}
+            fig, axs = plt.subplots(1, 4, figsize=figsize,
+                                    gridspec_kw={"width_ratios": [1.2, 3, 1, 1]})
+            axs[0].stem(mix, basefmt=" ", markerfmt=".", linefmt="C0-")
+            axs[0].set_xlabel("Channel", fontsize=7); axs[0].set_ylabel("Weight", fontsize=7)
+            axs[0].tick_params(labelsize=6)
+            axs[1].plot(self.time, s, lw=0.6, color="0.3")
+            axs[1].set_xlim(xlim); axs[1].set_xlabel("Time (s)", fontsize=7)
+            axs[1].tick_params(labelsize=6)
+            self._draw_beat_locked_panel(axs[2], "fetal", res["fetal"])
+            self._draw_beat_locked_panel(axs[3], "maternal", res["maternal"])
+            fig.suptitle(f"IC {comp_idx}   energy {energy:.2f}", fontsize=8)
+            fig.tight_layout()
+            if show:
+                plt.show()
+            figs.append(fig)
+        return figs
 
     def _update_all_stats(self):
         """Update all statistics widgets to show current similarity scores"""

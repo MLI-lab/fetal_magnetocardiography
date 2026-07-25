@@ -12,19 +12,39 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def detect_peaks(signal, fs):
+def detect_peaks(signal, fs, fetal=False, magnitude=False):
     """
     Cleans an ECG-like signal and identifies R-peak indices.
+
+    Parameters
+    ----------
+    signal : 1D array
+        The component or channel to detect R-peaks on.
+    fs : float
+        Sampling rate in Hz.
+    fetal : bool
+        If True, run the detector at half the reported sampling rate. The vg
+        method is tuned for adult heart rate, so halving the rate makes the
+        roughly twice-as-fast fetal QRS look adult-rate and get detected. The
+        returned indices are still in the original sample space.
+    magnitude : bool
+        If True, detect on the absolute value of the signal, which helps when the
+        QRS polarity flips across the record. Inversion is skipped in this case.
     """
-    # Invert signal
-    if signal.shape[0] > 2 * fs:
-        signal, _ = nk.ecg_invert(signal, sampling_rate=fs)
+    signal = np.asarray(signal, dtype=float)
+    if magnitude:
+        signal = np.abs(signal)
+    detect_fs = fs // 2 if fetal else fs
+
+    # Invert signal (a magnitude signal is already single-polarity)
+    if not magnitude and signal.shape[0] > 2 * detect_fs:
+        signal, _ = nk.ecg_invert(signal, sampling_rate=detect_fs)
 
     # Clean using the 'vg' method
-    signal_clean = nk.ecg_clean(signal, sampling_rate=fs, method="vg")
+    signal_clean = nk.ecg_clean(signal, sampling_rate=detect_fs, method="vg")
 
     # Extract peaks
-    peaks_dict = nk.ecg_findpeaks(signal_clean, sampling_rate=fs, method="vg")
+    peaks_dict = nk.ecg_findpeaks(signal_clean, sampling_rate=detect_fs, method="vg")
     return peaks_dict["ECG_R_Peaks"]
 
 
