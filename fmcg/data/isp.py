@@ -57,8 +57,12 @@ def load_isp(data_path: str, split: Literal["train", "test"], records: Optional[
             lead_names = list(rec.sig_name)
 
             raw = ast.literal_eval(row["target"])
+            # The CSV encodes P, QRS and T as 0, 1 and 2. The label array's
+            # background is 0, so the classes are shifted up by one to match the
+            # documented contract, 0=bg, 1=P, 2=QRS, 3=T. Without the shift the
+            # P wave is indistinguishable from background.
             annotations = [
-                {"wave_type": wave_type, "start": start, "end": end, "channel": ch}
+                {"wave_type": wave_type + 1, "start": start, "end": end, "channel": ch}
                 for wave_type, start, end in raw
                 for ch in range(signal.shape[1])
             ]
